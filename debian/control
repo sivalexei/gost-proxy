@@ -1,0 +1,24 @@
+Source: gost-proxy
+Section: net
+Priority: optional
+Maintainer: Developer <dev@example.com>
+Build-Depends: debhelper (>= 12), nasm, gcc, make
+Standards-Version: 4.5.0
+Homepage: https://github.com/user/gost-proxy
+
+Package: gost-proxy-server
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: ГОСТ Прокси-Сервер
+ Прокси-сервер с шифрованием ГОСТ Р 34.12-2015 "Кузнечик".
+ Ядро шифрования реализовано на ассемблере x86-64 (NASM).
+ Транспорт — UDP (аналог Hysteria2).
+ Поддерживает до 256 одновременных сессий, многопоточную обработку.
+
+Package: gost-proxy-client
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Клиент ГОСТ Прокси-Сервера
+ Клиент для подключения к ГОСТ Прокси-Серверу.
+ Шифрует и расшифровывает данные с использованием
+ ГОСТ Р 34.12-2015 (Кузнечик) на ассемблере x86-64.

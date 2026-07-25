@@ -1,0 +1,25 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include <stdint.h>
+
+typedef struct {
+    char     server_ip[64];
+    uint16_t server_port;
+    char     bind_addr[64];
+    uint16_t port;
+    int      max_sessions;
+    int      session_timeout;
+    int      rate_limit;
+    char     key[64];
+    char     log_level[16];
+    char     log_file[256];
+} gost_config_t;
+
+/* Загрузка конфигурации из JSON-файла */
+int config_load(gost_config_t *cfg, const char *path);
+
+/* Значения по умолчанию */
+void config_defaults(gost_config_t *cfg);
+
+#endif /* CONFIG_H */

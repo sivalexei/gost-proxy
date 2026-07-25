@@ -1,0 +1,6 @@
+{
+    "server_ip": "127.0.0.1",
+    "server_port": 10443,
+    "key": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+    "log_level": "info"
+}

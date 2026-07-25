@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+debs/
+rpmbuild/BUILD/
+rpmbuild/RPMS/
+rpmbuild/SRPMS/
+
+# Compiled binaries
+*.o
+*.so
+*.a
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
