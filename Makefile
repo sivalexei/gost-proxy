@@ -12,9 +12,11 @@ CORE_SRC = $(SRC_DIR)/core/server.c $(SRC_DIR)/core/client.c $(SRC_DIR)/core/ses
 
 CRYPTO_OBJ = $(BUILD_DIR)/gost_cipher.o
 CONFIG_OBJ = $(BUILD_DIR)/config.o
+LOG_OBJ = $(BUILD_DIR)/log.o
 SOCKS5_OBJ = $(BUILD_DIR)/socks5.o
-SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ)
-CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(SOCKS5_OBJ)
+TCP_HELPERS_OBJ = $(BUILD_DIR)/tcp_helpers.o
+SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ)
+CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ)
 
 .PHONY: all clean setup test test-https build-curl-openssl
 
@@ -38,6 +40,9 @@ $(BUILD_DIR)/session.o: $(SRC_DIR)/core/session.c | $(BUILD_DIR)
 $(BUILD_DIR)/config.o: $(SRC_DIR)/core/config.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/log.o: $(SRC_DIR)/core/log.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/socks5.o: $(SRC_DIR)/network/socks5.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -45,7 +50,7 @@ $(BUILD_DIR)/tcp_helpers.o: $(SRC_DIR)/core/tcp_helpers.asm | $(BUILD_DIR)
 	$(NASM) $(NASMFLAGS) $< -o $@
 
 $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(SERVER_OBJ)
-	$(CC) $^ -o $@ $(LDFLAGS)
+	$(CC) $^ -o $@ $(LDFLAGS) -no-pie
 
 $(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CLIENT_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)

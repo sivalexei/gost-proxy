@@ -50,14 +50,4 @@ typedef struct {
     int      active;
 } gost_session_t;
 
-/* Серверная сессия (расширенная) */
-typedef struct {
-    uint64_t session_id;
-    uint8_t  key[32];
-    uint8_t  expanded_key[160];
-    uint8_t  nonce[NONCE_SIZE];
-    uint32_t send_counter;  /* чётные: 0, 2, 4... — для ответов сервера */
-    int      active;
-} gost_server_session_t;
-
 #endif /* GOST_COMMON_H */

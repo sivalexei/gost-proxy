@@ -83,6 +83,22 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 EOF
 
+cat > %{buildroot}%{_unitdir}/gost-proxy-client.service << 'EOF'
+[Unit]
+Description=ГОСТ Прокси-Клиент
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%{_bindir}/gost-client %{_sysconfdir}/%{app_name}/client.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # Man pages
 echo ".TH GOST-SERVER 1 \"2025-07-24\" \"gost-proxy %{version}\"" > %{buildroot}%{_mandir}/man1/gost-server.1
 echo ".SH NAME\n gost-server \\- ГОСТ Прокси-Сервер" >> %{buildroot}%{_mandir}/man1/gost-server.1
@@ -96,6 +112,7 @@ echo ".SH SYNOPSIS\n .B gost-client [\fIserver_ip\fR] [\fIport\fR]" >> %{buildro
 %files client
 %{_bindir}/gost-client
 %{_sysconfdir}/%{app_name}/client.json
+%{_unitdir}/gost-proxy-client.service
 %{_mandir}/man1/gost-client.1*
 
 %files server
@@ -112,6 +129,15 @@ echo ".SH SYNOPSIS\n .B gost-client [\fIserver_ip\fR] [\fIport\fR]" >> %{buildro
 
 %postun server
 %systemd_postun_with_restart gost-proxy-server.service
+
+%post client
+%systemd_post gost-proxy-client.service
+
+%preun client
+%systemd_preun gost-proxy-client.service
+
+%postun client
+%systemd_postun_with_restart gost-proxy-client.service
 
 # ─── Changelog ───
 %changelog

@@ -17,6 +17,9 @@
 #include "gost_common.h"
 #include "protocol.h"
 #include "config.h"
+#include "log.h"
+
+extern ssize_t tcp_write_all(int fd, const void *buf, size_t len);
 
 #define BUFFER_SIZE 2048
 #define DEFAULT_CONFIG "/etc/gost-proxy/server.json"
@@ -67,7 +70,6 @@ static gost_session_t* create_session(uint64_t session_id) {
             memset(sessions[i].nonce, 0, NONCE_SIZE);
             memcpy(sessions[i].nonce, &session_id, 8);
             memcpy(sessions[i].expanded_key, expanded_key, 160);
-            printf("[SERVER] Новая сессия: %lu\n", session_id);
             return &sessions[i];
         }
     }
@@ -106,18 +108,9 @@ static void* tcp_to_udp_thread(void *arg) {
         if (ret > 0 && (pfd.revents & POLLIN)) {
             ssize_t n = read(conn->tcp_fd, buf, sizeof(buf));
             if (n <= 0) {
-                printf("[PROXY] TCP read returned %zd (errno=%d)\n", n, errno);
-                fflush(stdout);
-                printf("[PROXY] TCP соединение закрыто: %s:%d\n",
-                       inet_ntoa(conn->client_addr.sin_addr),
-                       ntohs(conn->client_addr.sin_port));
                 conn->active = 0;
                 break;
             }
-
-            printf("[PROXY] TCP read %zd bytes from target, first=%02x%02x%02x%02x\n",
-                   n, buf[0], buf[1], buf[2], buf[3]);
-            fflush(stdout);
 
             /* Отправляем данные клиенту через зашифрованный туннель (порциями) */
             gost_session_t *session = find_session(conn->session_id);
@@ -133,8 +126,11 @@ static void* tcp_to_udp_thread(void *arg) {
                                       buf + offset, chunk, session->expanded_key,
                                       session->nonce,
                                       &conn->send_counter) == 0) {
-                    sendto(conn->client_udp_fd, &pkt, sizeof(gost_packet_t),
-                           0, (struct sockaddr *)&conn->client_addr, conn->addr_len);
+                    ssize_t sent = sendto(conn->client_udp_fd, &pkt, sizeof(gost_packet_t),
+                                          0, (struct sockaddr *)&conn->client_addr, conn->addr_len);
+                    if (sent < 0) {
+                        perror("sendto keepalive");
+                    }
                 }
                 offset += chunk;
             }
@@ -145,7 +141,6 @@ static void* tcp_to_udp_thread(void *arg) {
 
     if (conn->tcp_fd >= 0) close(conn->tcp_fd);
     conn->active = 0;
-    printf("[PROXY] Поток TCP→UDP завершён\n");
     return NULL;
 }
 
@@ -159,7 +154,7 @@ static int connect_to_target(const char *host, uint16_t port) {
     snprintf(port_str, sizeof(port_str), "%u", port);
 
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
-        printf("[PROXY] getaddrinfo не удалось для %s:%u\n", host, port);
+        log_error("getaddrinfo не удалось для %s:%u", host, port);
         return -1;
     }
 
@@ -179,14 +174,14 @@ static int connect_to_target(const char *host, uint16_t port) {
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     if (connect(fd, result->ai_addr, result->ai_addrlen) < 0) {
-        printf("[PROXY] connect к %s:%u не удался: %s\n", host, port, strerror(errno));
+        log_error("connect к %s:%u не удался: %s", host, port, strerror(errno));
         close(fd);
         freeaddrinfo(result);
         return -1;
     }
 
     freeaddrinfo(result);
-    printf("[PROXY] TCP подключение к %s:%u установлено\n", host, port);
+    log_info("TCP подключение к %s:%u установлено", host, port);
     return fd;
 }
 
@@ -205,8 +200,6 @@ static void handle_data_packet(int sockfd, struct sockaddr_in *client_addr,
     if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id,
                              session->expanded_key, session->nonce,
                              &session->counter) != 0) {
-        printf("[SERVER] Ошибка расшифрования\n");
-        fflush(stdout);
         return;
     }
 
@@ -235,7 +228,7 @@ static void handle_data_packet(int sockfd, struct sockaddr_in *client_addr,
         }
 
         if (target_host[0] && target_port > 0) {
-            printf("[PROXY] CONNECT %s:%u (conn_id=%u)\n", target_host, target_port, pkt_conn_id);
+            log_info("CONNECT %s:%u (conn_id=%u)", target_host, target_port, pkt_conn_id);
 
             int tcp_fd = connect_to_target(target_host, target_port);
             if (tcp_fd < 0) {
@@ -246,8 +239,11 @@ static void handle_data_packet(int sockfd, struct sockaddr_in *client_addr,
                 protocol_pack_data(&err_pkt, session_id, pkt_conn_id, err_data, 2,
                                   session->expanded_key, session->nonce,
                                   &session->counter);
-                sendto(sockfd, &err_pkt, sizeof(gost_packet_t),
-                       0, (struct sockaddr *)client_addr, addr_len);
+                ssize_t sent = sendto(sockfd, &err_pkt, sizeof(gost_packet_t),
+                                      0, (struct sockaddr *)client_addr, addr_len);
+                if (sent < 0) {
+                    perror("sendto ERR");
+                }
                 return;
             }
 
@@ -280,8 +276,11 @@ static void handle_data_packet(int sockfd, struct sockaddr_in *client_addr,
             protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2,
                               session->expanded_key, session->nonce,
                               &session->counter);
-            sendto(sockfd, &ok_pkt, sizeof(gost_packet_t),
-                   0, (struct sockaddr *)client_addr, addr_len);
+            ssize_t sent = sendto(sockfd, &ok_pkt, sizeof(gost_packet_t),
+                                  0, (struct sockaddr *)client_addr, addr_len);
+            if (sent < 0) {
+                perror("sendto OK");
+            }
             return;
         }
     }
@@ -292,21 +291,9 @@ static void handle_data_packet(int sockfd, struct sockaddr_in *client_addr,
     pthread_mutex_unlock(&proxy_lock);
 
     if (conn && conn->active && conn->tcp_fd >= 0) {
-        printf("[PROXY] TCP write: %zu bytes, first=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-               data_len, decrypted[0], decrypted[1], decrypted[2], decrypted[3],
-               decrypted[4], decrypted[5], decrypted[6], decrypted[7]);
-        fflush(stdout);
-        /* Гарантируем отправку ВСЕХ байтов через цикл write */
-        size_t total = 0;
-        while (total < data_len) {
-            ssize_t written = write(conn->tcp_fd, decrypted + total, data_len - total);
-            if (written <= 0) {
-                if (written < 0 && errno == EINTR) continue;
-                printf("[PROXY] Ошибка записи в TCP: %zd errno=%d\n", written, errno);
-                conn->active = 0;
-                break;
-            }
-            total += written;
+        ssize_t written = tcp_write_all(conn->tcp_fd, decrypted, data_len);
+        if (written < 0) {
+            conn->active = 0;
         }
     }
 }
@@ -322,24 +309,23 @@ static void handle_packet(int sockfd, struct sockaddr_in *client_addr,
 
     switch (pkt->type) {
         case PKT_HANDSHAKE: {
-            printf("[SERVER] HANDSHAKE от клиента\n");
             uint64_t session_id = ((uint64_t)rand() << 32) | rand();
             gost_session_t *session = create_session(session_id);
             if (!session) {
-                printf("[SERVER] Ошибка: нет свободных сессий\n");
                 pthread_mutex_unlock(&sessions_lock);
                 return;
             }
             gost_packet_t response;
             protocol_create_handshake(&response, session_id, session->expanded_key);
-            sendto(sockfd, &response, sizeof(response), 0,
-                   (struct sockaddr *)client_addr, addr_len);
-            printf("[SERVER] Handshake ответ, session_id=%lu\n", session_id);
+            ssize_t sent = sendto(sockfd, &response, sizeof(response), 0,
+                                  (struct sockaddr *)client_addr, addr_len);
+            if (sent < 0) {
+                perror("sendto handshake response");
+            }
             break;
         }
         case PKT_DATA: {
             uint64_t session_id = ntohll(pkt->session_id);
-            printf("[SERVER] DATA от сессии %lu\n", session_id);
             handle_data_packet(sockfd, client_addr, addr_len, pkt, session_id);
             break;
         }
@@ -350,7 +336,6 @@ static void handle_packet(int sockfd, struct sockaddr_in *client_addr,
             uint32_t dc_conn_id = ntohl(pkt->conn_id);
             gost_session_t *session = find_session(session_id);
             if (session) {
-                printf("[SERVER] Отключение сессии %lu\n", session->session_id);
                 session->active = 0;
             }
             /* Закрываем прокси-соединение */
@@ -376,7 +361,6 @@ static void* server_thread(void *arg) {
     struct sockaddr_in client_addr;
     socklen_t addr_len;
 
-    printf("[SERVER] Поток обработки запущен\n");
     while (running) {
         addr_len = sizeof(client_addr);
         ssize_t recv_len = recvfrom(sockfd, buffer, BUFFER_SIZE, 0,
@@ -399,9 +383,11 @@ int main(int argc, char *argv[]) {
     else
         printf("[CONFIG] Файл не найден, используются значения по умолчанию\n");
 
+    /* Инициализация логирования */
+    log_init(cfg.log_level, cfg.log_file);
+
     printf("=== ГОСТ Прокси-Сервер ===\n");
     printf("Адрес: %s:%d\n", cfg.bind_addr, cfg.port);
-    printf("Макс. сессий: %d\n", cfg.max_sessions);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -413,7 +399,6 @@ int main(int argc, char *argv[]) {
         server_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(server_key, expanded_key);
-    printf("[INIT] Ключ расширен успешно\n");
 
     max_sessions = cfg.max_sessions;
     sessions = calloc(max_sessions, sizeof(gost_session_t));
@@ -440,6 +425,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("[SERVER] Слушаем на %s:%d...\n", cfg.bind_addr, cfg.port);
+    log_info("Сервер запущен на %s:%d", cfg.bind_addr, cfg.port);
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, server_thread, &sockfd) != 0) {
@@ -450,10 +436,11 @@ int main(int argc, char *argv[]) {
 
     while (running) sleep(1);
 
-    printf("\n[SERVER] Завершение...\n");
+    log_info("Сервер завершается...");
     close(sockfd);
     pthread_cancel(thread);
     pthread_join(thread, NULL);
     free(sessions);
+    log_close();
     return 0;
 }

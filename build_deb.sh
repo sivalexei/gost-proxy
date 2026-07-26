@@ -98,10 +98,27 @@ CLIENT_DIR="/tmp/${APP_NAME}-client_${VERSION}"
 rm -rf "$CLIENT_DIR"
 mkdir -p "$CLIENT_DIR/usr/bin"
 mkdir -p "$CLIENT_DIR/etc/gost-proxy"
+mkdir -p "$CLIENT_DIR/usr/lib/systemd/system"
 mkdir -p "$CLIENT_DIR/DEBIAN"
 
 install -m 0755 build/gost-client "$CLIENT_DIR/usr/bin/gost-client"
 install -m 0644 config/client.json "$CLIENT_DIR/etc/gost-proxy/client.json"
+
+cat > "$CLIENT_DIR/usr/lib/systemd/system/gost-proxy-client.service" << 'EOF'
+[Unit]
+Description=ГОСТ Прокси-Клиент
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gost-client /etc/gost-proxy/client.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 cat > "$CLIENT_DIR/DEBIAN/control" << EOF
 Package: gost-proxy-client
@@ -115,6 +132,13 @@ Description: Клиент ГОСТ Прокси-Сервера
  Шифрование: ГОСТ Р 34.12-2015 (RFC 7801).
  Включает SOCKS5-прокси на 127.0.0.1:1080.
 EOF
+
+cat > "$CLIENT_DIR/DEBIAN/postinst" << 'EOF'
+#!/bin/bash
+systemctl daemon-reload
+echo "gost-proxy-client установлен. Запуск: systemctl start gost-proxy-client"
+EOF
+chmod 755 "$CLIENT_DIR/DEBIAN/postinst"
 
 # Сборка .deb
 echo "[4/4] Сборка .deb файлов..."

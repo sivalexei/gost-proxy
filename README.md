@@ -1,20 +1,15 @@
-# ГОСТ Прокси-Сервер
+# ГОСТ Прокси
 
-> ⚠️ **ПРОЕКТ В РАЗРАБОТКЕ**
->
-> Код открыт для изучения и обсуждения, но программа **пока не работает**.
-> Сборка может завершаться ошибками, функционал не протестирован.
-> Не используйте в продакшене!
-
-Прокси-сервер с шифрованием ГОСТ Р 34.12-2015 "Кузнечик", реализованный на NASM x86-64.
+SOCKS5-прокси с шифрованием ГОСТ Р 34.12-2015 "Кузнечик". Клиент шифрует трафик и отправляет через UDP на сервер; сервер расшифровывает и проксирует на целевые хосты.
 
 ## Возможности
 
-- Шифрование ГОСТ Р 34.12-2015 (Кузнечик) на ассемблере x86-64
-- UDP-транспорт (аналог Hysteria2)
-- Аутентифицированные сессии
+- Шифрование ГОСТ Р 34.12-2015 (Кузнечик) — C + NASM x86-64
+- UDP-транспорт, SOCKS5 на клиенте (127.0.0.1:1080)
+- Auth-tag (encrypt-then-MAC) для проверки целостности
 - CTR-режим для потоковых данных
-- Сервер и клиент
+- conn_id мультиплексирование — параллельные соединения изолированы
+- TCP write-loop для гарантированной доставки
 
 ## Требования
 
@@ -25,28 +20,31 @@
 ## Сборка
 
 ```bash
-# Установка зависимостей
-make setup
-
-# Сборка
-make
-
-# Тесты
-make test
+make setup    # установка зависимостей
+make          # сборка gost-server и gost-client
+make test     # тесты шифрования (RFC 7801)
 ```
 
 ## Запуск
 
 ### Сервер
+
 ```bash
-./build/gost-server [port]
-# По умолчанию: порт 8443
+./build/gost-server /etc/gost-proxy/server.json
 ```
 
+Конфиг по умолчанию — `config/server.json` (порт 10443).
+
 ### Клиент
+
 ```bash
-./build/gost-client [server_ip] [port]
-# По умолчанию: 127.0.0.1:8443
+./build/gost-client /etc/gost-proxy/client.json
+```
+
+Клиент запускает SOCKS5-прокси на `127.0.0.1:1080`. Настройте Firefox или curl:
+
+```bash
+curl --socks5-hostname 127.0.0.1:1080 https://example.com
 ```
 
 ## Архитектура
@@ -56,45 +54,66 @@ src/
 ├── crypto/
 │   ├── kuznyechik.asm     # Ядро шифрования (NASM x86-64)
 │   ├── kuznyechik.h       # C-интерфейс
-│   ├── gost_common.h      # Общие определения
-│   └── gost_test.c        # Тесты
+│   ├── gost_cipher.c      # C-реализация (RFC 7801)
+│   ├── gost_common.h      # Общие определения, структура пакета
+│   └── gost_test.c        # Тесты по RFC 7801
 ├── core/
-│   ├── server.c           # Прокси-сервер
-│   ├── client.c           # Клиент
-│   ├── session.c          # Управление сессиями
-│   └── protocol.h         # Протокол обмена
+│   ├── server.c           # Прокси-сервер (UDP → TCP)
+│   ├── client.c           # Клиент (SOCKS5 → UDP)
+│   ├── session.c          # pack/unpack с CTR + MAC
+│   ├── protocol.h         # Протокол обмена
+│   ├── config.c           # JSON-парсер конфигурации
+│   └── tcp_helpers.asm    # write loop + hex dump (NASM)
 └── network/
-    └── (сетевые утилиты)
+    └── socks5.c           # SOCKS5 CONNECT + relay
 ```
 
 ## Протокол
 
-| Тип пакета | Описание |
-|-----------|----------|
-| 0x01 | HANDSHAKE — обмен ключами |
-| 0x02 | DATA — зашифрованные данные |
+Формат пакета:
+
+```
+[ magic(4) | type(1) | conn_id(4) | session_id(8) | payload(1400) | auth_tag(16) ]
+```
+
+| Тип | Описание |
+|-----|----------|
+| 0x01 | HANDSHAKE — аутентификация сессии |
+| 0x02 | DATA — зашифрованные данные с conn_id |
 | 0x03 | KEEPALIVE — поддержание сессии |
 | 0x04 | DISCONNECT — отключение |
 
-## HTTPS и TLS
+## Сборка пакетов
 
-Прокси пересылает байты — TLS handshake происходит в клиентском приложении.
-На ALT Linux `curl` использует GnuTLS, который может не работать с некоторыми CDN.
+```bash
+# DEB (Ubuntu/Debian)
+./build_deb.sh
+ls debs/
 
-**Решение:** соберите curl с OpenSSL:
+# RPM (ALT Linux)
+./build_rpm.sh
+ls rpmbuild/RPMS/
+```
+
+## HTTPS через прокси
+
+Прокси прозрачно пересылает байты — TLS handshake происходит в клиентском приложении.
+
+**HTTP** работает стабильно. **HTTPS** может не работать с GnuTLS (ALT Linux curl).
+
+Решение — собрите curl с OpenSSL:
 ```bash
 make build-curl-openssl
 export PATH="$HOME/.local/bin:$PATH"
 curl --socks5-hostname 127.0.0.1:1080 https://example.com
 ```
 
-Или используйте Firefox (NSS) — он работает стабильнее.
-Подробности: [docs/https-troubleshooting.md](docs/https-troubleshooting.md)
+Или используйте Firefox (NSS).
+
+Подробнее: `docs/https-troubleshooting.md`
 
 ## Безопасность
 
-- Ключ 256 бит
-- Блок 128 бит (Кузнечик)
-- 10 раундов шифрования
-- CTR-режим для потоковых данных
-- Auth-tag для проверки целостности
+- Ключ 256 бит, блок 128 бит, 10 раундов
+- CTR-режим, encrypt-then-MAC
+- conn_id изолирует параллельные соединения

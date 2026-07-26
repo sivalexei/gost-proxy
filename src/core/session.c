@@ -66,10 +66,6 @@ int protocol_pack_data(
     pkt->session_id = htonll(session_id);
 
     uint32_t pkt_counter = *counter;
-    printf("[PACK] counter=%u, data_len=%zu, nonce[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-           pkt_counter, data_len,
-           nonce[0], nonce[1], nonce[2], nonce[3], nonce[4], nonce[5], nonce[6], nonce[7]);
-    fflush(stdout);
 
     /* Counter — открытый (не шифруется) */
     pkt->payload[0] = (pkt_counter >> 24) & 0xFF;
@@ -126,9 +122,6 @@ int protocol_unpack_data(
                            ((uint32_t)pkt->payload[1] << 16) |
                            ((uint32_t)pkt->payload[2] << 8)  |
                            ((uint32_t)pkt->payload[3]);
-    printf("[UNPACK] pkt_counter=%u, nonce[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x\n", pkt_counter,
-           nonce[0], nonce[1], nonce[2], nonce[3], nonce[4], nonce[5], nonce[6], nonce[7]);
-    fflush(stdout);
 
     /* Проверяем MAC от ВСЕГО payload */
     uint8_t expected_mac[AUTH_TAG_SIZE];
@@ -151,17 +144,11 @@ int protocol_unpack_data(
                   ((uint32_t)decrypted[3]);
     if (dl > MAX_PAYLOAD - 4) return -1;
 
-    printf("[UNPACK] dl=%u, dec_first8=", dl);
-    for (int i = 0; i < 8; i++) printf("%02x", decrypted[i]);
-    printf(", enc_first8=");
-    for (int i = 0; i < 8; i++) printf("%02x", pkt->payload[4+i]);
-    printf("\n");
-    fflush(stdout);
-
     *data_len = dl;
     memcpy(data, decrypted + 4, dl);
 
-    /* НЕ обновляем counter — он обновляется только при pack */
+    /* Обновляем counter значением из пакета */
+    *counter = pkt_counter;
     return 0;
 }
 

@@ -14,6 +14,7 @@
 #include "kuznyechik.h"
 #include "gost_common.h"
 #include "protocol.h"
+#include "log.h"
 #include "socks5.h"
 
 #define SOCKS5_BUF_SIZE 4096
@@ -27,12 +28,10 @@ static uint16_t proxy_server_port;
 static int proxy_udp_fd = -1;
 static struct sockaddr_in proxy_server_addr;
 static uint32_t *shared_counter = NULL;
-static uint32_t send_counter = 0;
-static uint32_t recv_counter = 0;
 static uint32_t next_conn_id = 1;
 
 /* Отправка данных через gost-proxy туннель (с чанкированием) */
-static int tunnel_send(const uint8_t *data, size_t len, uint32_t conn_id) {
+static int tunnel_send(const uint8_t *data, size_t len, uint32_t conn_id, uint32_t *counter) {
     size_t offset = 0;
     while (offset < len) {
         size_t chunk = len - offset;
@@ -43,9 +42,7 @@ static int tunnel_send(const uint8_t *data, size_t len, uint32_t conn_id) {
         if (protocol_pack_data(&pkt, proxy_session.session_id, conn_id,
                               data + offset, chunk, proxy_session.expanded_key,
                               proxy_session.nonce,
-                              &send_counter) != 0) {
-            printf("[SOCKS5] Ошибка pack_data offset=%zu chunk=%zu\n", offset, chunk);
-            fflush(stdout);
+                              counter) != 0) {
             return -1;
         }
 
@@ -53,8 +50,6 @@ static int tunnel_send(const uint8_t *data, size_t len, uint32_t conn_id) {
                               0, (struct sockaddr *)&proxy_server_addr,
                               sizeof(proxy_server_addr));
         if (sent <= 0) {
-            printf("[SOCKS5] Ошибка sendto offset=%zu\n", offset);
-            fflush(stdout);
             return -1;
         }
         offset += chunk;
@@ -63,7 +58,7 @@ static int tunnel_send(const uint8_t *data, size_t len, uint32_t conn_id) {
 }
 
 /* Приём данных из gost-proxy туннеля (фильтрация по conn_id) */
-static int tunnel_recv(uint8_t *data, size_t max_len, int timeout_ms, uint32_t expect_conn_id) {
+static int tunnel_recv(uint8_t *data, size_t max_len __attribute__((unused)), int timeout_ms, uint32_t expect_conn_id, uint32_t *counter) {
     uint8_t buffer[SOCKS5_BUF_SIZE];
     struct sockaddr_in from;
     socklen_t from_len;
@@ -88,7 +83,7 @@ static int tunnel_recv(uint8_t *data, size_t max_len, int timeout_ms, uint32_t e
                     if (protocol_unpack_data(pkt, data, &data_len, NULL,
                                              proxy_session.expanded_key,
                                              proxy_session.nonce,
-                                             &recv_counter) == 0) {
+                                             counter) == 0) {
                         return (int)data_len;
                     }
                 }
@@ -108,8 +103,9 @@ static void* proxy_data_thread(void *arg) {
     uint32_t my_conn_id = parg->conn_id;
     free(parg);
 
-    printf("[SOCKS5] Проксирование данных... conn_id=%u\n", my_conn_id);
-    fflush(stdout);
+    /* Локальные счётчики для этого соединения (чётные для отправки, нечётные для получения) */
+    uint32_t send_counter = 0;
+    uint32_t recv_counter = 1;
 
     uint8_t buf[SOCKS5_BUF_SIZE];
 
@@ -122,39 +118,24 @@ static void* proxy_data_thread(void *arg) {
         if (ret > 0 && (pfd.revents & POLLIN)) {
             ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
             if (n <= 0) {
-                printf("[SOCKS5] recv from client returned %zd, closing\n", n);
-                fflush(stdout);
                 break;
             }
 
-            printf("[SOCKS5] Got %zd bytes from client, sending through tunnel (conn_id=%u)\n", n, my_conn_id);
-            printf("[SOCKS5] Send first=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                   buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
-            fflush(stdout);
-            if (tunnel_send(buf, n, my_conn_id) != 0) {
-                printf("[SOCKS5] Ошибка отправки\n");
-                fflush(stdout);
+            if (tunnel_send(buf, n, my_conn_id, &send_counter) != 0) {
                 break;
             }
         }
 
         /* Проверяем данные от сервера (с коротким таймаутом, фильтр по conn_id) */
         uint8_t resp[SOCKS5_BUF_SIZE];
-        int resp_len = tunnel_recv(resp, sizeof(resp), 50, my_conn_id);
+        int resp_len = tunnel_recv(resp, sizeof(resp), 50, my_conn_id, &recv_counter);
         if (resp_len > 0) {
-            printf("[SOCKS5] Got %d bytes (conn_id=%u), first=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                   resp_len, my_conn_id,
-                   resp[0], resp[1], resp[2], resp[3], resp[4], resp[5], resp[6], resp[7]);
-            fflush(stdout);
-
             /* Гарантируем отправку ВСЕХ байтов клиенту */
             {
                 size_t total_sent = 0;
                 while (total_sent < (size_t)resp_len) {
                     ssize_t s = send(client_fd, resp + total_sent, resp_len - total_sent, MSG_NOSIGNAL);
                     if (s <= 0) {
-                        printf("[SOCKS5] send to client failed: %zd errno=%d (%s)\n",
-                               s, errno, strerror(errno));
                         goto close_client;
                     }
                     total_sent += s;
@@ -163,17 +144,12 @@ static void* proxy_data_thread(void *arg) {
 
             /* Считываем все доступные чанки с сервера (фильтр по conn_id) */
             while (socks5_running) {
-                int extra_len = tunnel_recv(resp, sizeof(resp), 10, my_conn_id);
+                int extra_len = tunnel_recv(resp, sizeof(resp), 10, my_conn_id, &recv_counter);
                 if (extra_len <= 0) break;
-                printf("[SOCKS5] Got extra %d bytes, first=%02x%02x%02x%02x\n", extra_len,
-                       resp[0], resp[1], resp[2], resp[3]);
-                fflush(stdout);
                 size_t extra_sent = 0;
                 while (extra_sent < (size_t)extra_len) {
                     ssize_t s = send(client_fd, resp + extra_sent, extra_len - extra_sent, MSG_NOSIGNAL);
                     if (s <= 0) {
-                        printf("[SOCKS5] send extra to client failed: %zd errno=%d (%s)\n",
-                               s, errno, strerror(errno));
                         goto close_client;
                     }
                     extra_sent += s;
@@ -184,8 +160,6 @@ static void* proxy_data_thread(void *arg) {
 
 close_client:
     close(client_fd);
-    printf("[SOCKS5] Клиент отключён\n");
-    fflush(stdout);
     return NULL;
 }
 
@@ -241,7 +215,7 @@ static void* socks5_client_thread(void *arg) {
         }
     }
 
-    printf("[SOCKS5] Запрос: %s:%u\n", target_host, target_port);
+    log_info("SOCKS5 CONNECT %s:%u", target_host, target_port);
 
     /* Генерируем conn_id для этого соединения */
     uint32_t my_conn_id = __sync_fetch_and_add(&next_conn_id, 1);
@@ -249,7 +223,6 @@ static void* socks5_client_thread(void *arg) {
     /* Резолвим домен через DNS (клиентский резолв) */
     struct hostent *he = gethostbyname(target_host);
     if (!he) {
-        printf("[SOCKS5] DNS не удался: %s\n", target_host);
         uint8_t err[] = { 0x05, 0x04, 0x00, 0x01, 0,0,0,0, 0,0 };
         send(client_fd, err, 10, 0);
         close(client_fd);
@@ -267,8 +240,8 @@ static void* socks5_client_thread(void *arg) {
     connect_data[7] = target_port & 0xFF;
 
     /* Отправляем CONNECT через туннель с conn_id */
-    if (tunnel_send(connect_data, 8, my_conn_id) != 0) {
-        printf("[SOCKS5] Ошибка отправки CONNECT\n");
+    uint32_t conn_send_counter = 0;
+    if (tunnel_send(connect_data, 8, my_conn_id, &conn_send_counter) != 0) {
         uint8_t err[] = { 0x05, 0x01, 0x00, 0x01, 0,0,0,0, 0,0 };
         send(client_fd, err, 10, 0);
         close(client_fd);
@@ -276,10 +249,10 @@ static void* socks5_client_thread(void *arg) {
     }
 
     /* Ждём ответ от сервера (фильтр по conn_id) */
+    uint32_t conn_recv_counter = 1;
     uint8_t resp[SOCKS5_BUF_SIZE];
-    int resp_len = tunnel_recv(resp, sizeof(resp), 5000, my_conn_id);
+    int resp_len = tunnel_recv(resp, sizeof(resp), 5000, my_conn_id, &conn_recv_counter);
     if (resp_len < 2 || resp[0] != 0x02 || resp[1] != 0x00) {
-        printf("[SOCKS5] CONNECT отклонён сервером (conn_id=%u)\n", my_conn_id);
         uint8_t err[] = { 0x05, 0x05, 0x00, 0x01, 0,0,0,0, 0,0 };
         send(client_fd, err, 10, 0);
         close(client_fd);
@@ -289,8 +262,6 @@ static void* socks5_client_thread(void *arg) {
     /* SOCKS5 успех */
     uint8_t reply[] = { 0x05, 0x00, 0x00, 0x01, 0,0,0,0, 0,0 };
     send(client_fd, reply, 10, 0);
-
-    printf("[SOCKS5] Подключено к %s:%u (conn_id=%u)\n", target_host, target_port, my_conn_id);
 
     /* Запускаем проксирование данных (передаём conn_id) */
     pthread_t thread;
@@ -308,7 +279,7 @@ static void* socks5_client_thread(void *arg) {
 static void* socks5_server_thread(void *arg) {
     (void)arg;
 
-    printf("[SOCKS5] SOCKS5-прокси запущен на 127.0.0.1:%d\n", SOCKS5_PORT);
+    log_info("SOCKS5-прокси запущен на 127.0.0.1:%d", SOCKS5_PORT);
 
     while (socks5_running) {
         struct sockaddr_in client_addr;
@@ -317,7 +288,7 @@ static void* socks5_server_thread(void *arg) {
         int client_fd = accept(socks5_listen_fd,
                                (struct sockaddr *)&client_addr, &addr_len);
         if (client_fd < 0) {
-            if (socks5_running) perror("[SOCKS5] accept");
+            if (socks5_running) log_error("SOCKS5 accept: %s", strerror(errno));
             continue;
         }
 
@@ -326,7 +297,7 @@ static void* socks5_server_thread(void *arg) {
 
         pthread_t thread;
         if (pthread_create(&thread, NULL, socks5_client_thread, fd_ptr) != 0) {
-            perror("[SOCKS5] pthread_create");
+            log_error("SOCKS5 pthread_create: %s", strerror(errno));
             close(client_fd);
             free(fd_ptr);
         } else {
@@ -356,8 +327,6 @@ int socks5_start(uint16_t port, const char *server_ip, uint16_t server_port,
     proxy_udp_fd = existing_udp_fd;
     proxy_server_addr = *server_addr;
     shared_counter = session_counter;
-    send_counter = 0;   /* клиент: чётные 0, 2, 4... */
-    recv_counter = 0;
 
     /* TCP-сокет для SOCKS5 */
     socks5_listen_fd = socket(AF_INET, SOCK_STREAM, 0);

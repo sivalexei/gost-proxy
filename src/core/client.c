@@ -13,6 +13,7 @@
 #include "gost_common.h"
 #include "protocol.h"
 #include "config.h"
+#include "log.h"
 #include "socks5.h"
 
 #define BUFFER_SIZE 2048
@@ -34,7 +35,6 @@ static int send_handshake(int sockfd, struct sockaddr_in *server_addr) {
     pkt.magic = htonl(GOST_PROXY_MAGIC);
     pkt.type = PKT_HANDSHAKE;
 
-    printf("[CLIENT] Отправка handshake...\n");
     ssize_t sent = sendto(sockfd, &pkt, sizeof(pkt), 0,
                           (struct sockaddr *)server_addr, sizeof(*server_addr));
     if (sent < 0) { perror("sendto handshake"); return -1; }
@@ -45,7 +45,6 @@ static int send_handshake(int sockfd, struct sockaddr_in *server_addr) {
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     int ret = select(sockfd + 1, &fds, NULL, NULL, &tv);
     if (ret <= 0) {
-        printf("[CLIENT] Таймаут: сервер не отвечает\n");
         return -1;
     }
 
@@ -55,13 +54,11 @@ static int send_handshake(int sockfd, struct sockaddr_in *server_addr) {
                                 (struct sockaddr *)server_addr, &addr_len);
 
     if (recv_len < (ssize_t)sizeof(gost_packet_t)) {
-        printf("[CLIENT] Ошибка: неверный ответ handshake\n");
         return -1;
     }
 
     const gost_packet_t *resp = (const gost_packet_t *)buffer;
     if (ntohl(resp->magic) != GOST_PROXY_MAGIC || resp->type != PKT_HANDSHAKE) {
-        printf("[CLIENT] Ошибка: неверный тип пакета в ответе\n");
         return -1;
     }
 
@@ -72,7 +69,6 @@ static int send_handshake(int sockfd, struct sockaddr_in *server_addr) {
     memcpy(session.nonce, &session.session_id, 8);
     memcpy(session.expanded_key, expanded_key, 160);
 
-    printf("[CLIENT] Handshake выполнен, session_id=%lu\n", session.session_id);
     return 0;
 }
 
@@ -91,8 +87,12 @@ int main(int argc, char *argv[]) {
     else
         printf("[CONFIG] Файл не найден, используются значения по умолчанию\n");
 
+    /* Инициализация логирования */
+    log_init(cfg.log_level, cfg.log_file);
+
     printf("=== ГОСТ Прокси-Клиент ===\n");
     printf("Сервер: %s:%d\n", cfg.server_ip, cfg.server_port);
+    log_info("Клиент запущен, сервер: %s:%d", cfg.server_ip, cfg.server_port);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -104,7 +104,6 @@ int main(int argc, char *argv[]) {
         client_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(client_key, expanded_key);
-    printf("[INIT] Ключ расширен успешно\n");
 
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) { perror("socket"); return 1; }
@@ -155,7 +154,6 @@ int main(int argc, char *argv[]) {
         sleep(1);
     }
 
-    printf("\n[CLIENT] Завершение...\n");
     socks5_stop();
 
     gost_packet_t disconnect;
@@ -165,6 +163,8 @@ int main(int argc, char *argv[]) {
     disconnect.session_id = htonll(session.session_id);
     sendto(sockfd, &disconnect, sizeof(disconnect), 0,
            (struct sockaddr *)&server_addr, sizeof(server_addr));
+    log_info("Клиент завершается...");
+    log_close();
     close(sockfd);
     return 0;
 }
