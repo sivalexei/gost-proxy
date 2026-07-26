@@ -88,6 +88,9 @@ EOF
 
 cat > "$SERVER_DIR/DEBIAN/postinst" << 'EOF'
 #!/bin/bash
+mkdir -p /var/log/gost-proxy
+chown root:root /var/log/gost-proxy
+chmod 755 /var/log/gost-proxy
 systemctl daemon-reload
 echo "gost-proxy-server установлен. Запуск: systemctl start gost-proxy-server"
 EOF
@@ -135,6 +138,9 @@ EOF
 
 cat > "$CLIENT_DIR/DEBIAN/postinst" << 'EOF'
 #!/bin/bash
+mkdir -p /var/log/gost-proxy
+chown root:root /var/log/gost-proxy
+chmod 755 /var/log/gost-proxy
 systemctl daemon-reload
 echo "gost-proxy-client установлен. Запуск: systemctl start gost-proxy-client"
 EOF

@@ -122,6 +122,8 @@ echo ".SH SYNOPSIS\n .B gost-client [\fIserver_ip\fR] [\fIport\fR]" >> %{buildro
 %{_mandir}/man1/gost-server.1*
 
 %post server
+mkdir -p /var/log/gost-proxy
+chmod 755 /var/log/gost-proxy
 %systemd_post gost-proxy-server.service
 
 %preun server
@@ -131,6 +133,8 @@ echo ".SH SYNOPSIS\n .B gost-client [\fIserver_ip\fR] [\fIport\fR]" >> %{buildro
 %systemd_postun_with_restart gost-proxy-server.service
 
 %post client
+mkdir -p /var/log/gost-proxy
+chmod 755 /var/log/gost-proxy
 %systemd_post gost-proxy-client.service
 
 %preun client
