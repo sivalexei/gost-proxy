@@ -1,0 +1,143 @@
+--- a/src/core/gost_common.h
++++ b/src/core/gost_common.h
+@@ -17,6 +17,7 @@
+ 
+ /* Типы пакетов */
+ #define PKT_HANDSHAKE   0x01
++#define PKT_HANDSHAKE_ACK 0x01
+ #define PKT_DATA        0x02
+ #define PKT_KEEPALIVE   0x03
+ #define PKT_DISCONNECT  0x04
+--- a/src/core/proxy.c
++++ b/src/core/proxy.c
+@@ -1,6 +1,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdatomic.h>
+ #include <unistd.h>
+ #include <signal.h>
+ #include <errno.h>
+@@ -32,8 +33,8 @@ static uint8_t nonce[NONCE_SIZE];
+ static uint64_t session_id = 0;
+-static uint32_t server_counter = 0;
++static _Atomic uint32_t server_counter = 0;
+ static int udp_fd = -1;
+ static struct sockaddr_in server_addr;
+ static socklen_t server_addr_len;
+@@ -114,7 +115,7 @@ static int send_to_server(uint32_t conn_id, const uint8_t *data, size_t data_len
+ 
+-            log_error("protocol_pack_data failed");
++            log_error("protocol_pack_data failed");
+             return -1;
+@@ -126,7 +127,7 @@ static int send_to_server(uint32_t conn_id, const uint8_t *data, size_t data_len
+         log_error("sendto failed: %s", strerror(errno));
+         return -1;
+     }
+-    return 0;
++    return 0;
+ }
+ 
+ static ssize_t recv_from_server(uint8_t *out, size_t out_len, uint32_t *out_conn_id) {
+@@ -145,7 +146,7 @@ static ssize_t recv_from_server(uint8_t *out, size_t out_len, uint32_t *out_conn
+         log_debug("Failed to unpack data");
+         return -1;
+     }
+-    if (data_len > out_len) data_len = out_len;
++    if (data_len > out_len) data_len = out_len;
+     memcpy(out, decrypted, data_len);
+     *out_conn_id = pkt_conn_id;
+     return (ssize_t)data_len;
+@@ -199,15 +200,6 @@ static int parse_socks5_connect(const uint8_t *buf, size_t len,
+     return 0;
+ }
+ 
+-static void send_socks5_response(int tcp_fd, uint8_t reply_code) {
+-    uint8_t resp[] = { 0x05, reply_code, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+-    tcp_write_all(tcp_fd, resp, sizeof(resp));
+-}
+-
+-static int send_connect(proxy_conn_t *conn) {
+-    uint8_t connect_data[256];
+-    memset(connect_data, 0, sizeof(connect_data));
+-    size_t dlen = 0;
++static int send_connect(proxy_conn_t *conn) {
++    uint8_t connect_data[256];
++    memset(connect_data, 0, sizeof(connect_data));
++    size_t dlen = 0;
+     if (strchr(conn->target_host, '.')) {
+         connect_data[0] = 0x01;
+         inet_pton(AF_INET, conn->target_host, &connect_data[1]);
+@@ -220,7 +212,7 @@ static int send_connect(proxy_conn_t *conn) {
+     }
+     connect_data[2 + dlen + 1] = (conn->target_port >> 8) & 0xFF;
+     connect_data[2 + dlen + 2] = conn->target_port & 0xFF;
+-    return send_to_server(conn->conn_id, connect_data, 2 + dlen + 3);
++    return send_to_server(conn->conn_id, connect_data, 2 + dlen + 3);
+ }
+ 
+@@ -239,7 +231,7 @@ static void* udp_listener_thread(void *arg) {
+             uint32_t pkt_conn_id;
+             ssize_t data_len = recv_from_server(buf, sizeof(buf), &pkt_conn_id);
+             if (data_len <= 0) continue;
+-            pthread_mutex_lock(&proxy_lock);
++            pthread_mutex_lock(&proxy_lock);
+             proxy_conn_t *conn = find_conn_by_id(pkt_conn_id);
+             if (conn && conn->active && conn->state == 1) {
+                 ssize_t written = tcp_write_all(conn->tcp_fd, buf, data_len);
+@@ -251,7 +243,7 @@ static void* udp_listener_thread(void *arg) {
+         }
+     }
+-    log_info("UDP listener stopped");
++    log_info("UDP listener stopped");
+     return NULL;
+ }
+ 
+@@ -280,7 +272,7 @@ static void* client_thread(void *arg) {
+         log_error("Server rejected connection, conn_id=%u, code=%u", conn->conn_id, reply_code);
+         send_socks5_response(conn->tcp_fd, reply_code);
+         conn->active = 0;
+-        return NULL;
++        return NULL;
+     }
+     send_socks5_response(conn->tcp_fd, 0x00);
+     conn->state = 1;
+@@ -301,7 +293,7 @@ static void* client_thread(void *arg) {
+             ssize_t n = read(conn->tcp_fd, buf, sizeof(buf));
+             if (n <= 0) { log_info("Client disconnected, conn_id=%u", conn->conn_id); conn->active = 0; break; }
+-            if (send_to_server(conn->conn_id, buf, n) != 0) {
++            if (send_to_server(conn->conn_id, buf, n) != 0) {
+                 log_error("Failed to send to server, conn_id=%u", conn->conn_id);
+                 conn->active = 0; break;
+             }
+@@ -313,7 +305,7 @@ static void* client_thread(void *arg) {
+     }
+     if (conn->tcp_fd >= 0) { shutdown(conn->tcp_fd, SHUT_WR); close(conn->tcp_fd); }
+     conn->active = 0;
+-    log_info("Client thread closed, conn_id=%u, sent=%lu, recv=%lu",
++    log_info("Client thread closed, conn_id=%u, sent=%lu, recv=%lu",
+              conn->conn_id, conn->bytes_sent, conn->bytes_recv);
+     return NULL;
+ }
+@@ -352,13 +344,13 @@ int main(int argc, char *argv[]) {
+     ssize_t sent = sendto(udp_fd, &handshake, sizeof(handshake), 0,
+                           (struct sockaddr *)&server_addr, server_addr_len);
+     if (sent < 0) { perror("sendto handshake"); return 1; }
+-    uint8_t handshake_resp[MAX_PAYLOAD];
++    uint8_t handshake_resp[BUFFER_SIZE];
+     uint32_t h_conn_id = 0;
+-    ssize_t hlen = recv_from_server(handshake_resp, sizeof(handshake_resp), &h_conn_id);
++    ssize_t hlen = recv_from_server(handshake_resp, sizeof(handshake_resp), &h_conn_id);
+     if (hlen < 0) { log_error("No handshake response"); return 1; }
+     const gost_packet_t *h_pkt = (const gost_packet_t *)handshake_resp;
+-    if (ntohl(h_pkt->magic) != GOST_PROXY_MAGIC) { log_error("Bad handshake magic"); return 1; }
+-    if (h_pkt->type != PKT_HANDSHAKE_ACK) { log_error("Bad handshake type: %u", h_pkt->type); return 1; }
++    if (ntohl(h_pkt->magic) != GOST_PROXY_MAGIC) { log_error("Bad handshake magic"); return 1; }
++    if (h_pkt->type != PKT_HANDSHAKE) { log_error("Bad handshake type: %u", h_pkt->type); return 1; }
+-    session_id = h_pkt->session_id;
+-    memcpy(nonce, &h_pkt->nonce[0], NONCE_SIZE);
+-    server_counter = ntohl(h_pkt->counter);
++    session_id = ntohll(h_pkt->session_id);
++    server_counter = 0;
+     log_info("Handshake OK: session_id=%lu, nonce=%02x%02x%02x, server_counter=%u",
+              session_id, nonce[0], nonce[1], nonce[2], server_counter);

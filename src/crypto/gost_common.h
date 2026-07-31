@@ -19,8 +19,9 @@
 #endif
 
 /* Типы пакетов */
-#define PKT_HANDSHAKE   0x01
-#define PKT_DATA        0x02
+#define PKT_HANDSHAKE           0x01
+#define PKT_HANDSHAKE_ACK       0x01
+#define PKT_DATA                0x02
 #define PKT_KEEPALIVE   0x03
 #define PKT_DISCONNECT  0x04
 

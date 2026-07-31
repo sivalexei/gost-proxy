@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
@@ -9,8 +10,12 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
+#include "quic_layer.h"
 #include "kuznyechik.h"
 #include "gost_common.h"
+#include "socks5.h"
+
+static void* keepalive_thread(void *arg);
 #include "protocol.h"
 #include "config.h"
 #include "log.h"
@@ -18,58 +23,18 @@
 
 #define BUFFER_SIZE 2048
 #define DEFAULT_CONFIG "/etc/gost-proxy/client.json"
+#define KEEPALIVE_INTERVAL 30  /* секунд */
 
 static volatile int running = 1;
 static gost_session_t session;
+
+static quic_client_t quic_client;
 static uint8_t expanded_key[160];
 static gost_config_t cfg;
 
 static void signal_handler(int sig) {
     (void)sig;
     running = 0;
-}
-
-static int send_handshake(int sockfd, struct sockaddr_in *server_addr) {
-    gost_packet_t pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.magic = htonl(GOST_PROXY_MAGIC);
-    pkt.type = PKT_HANDSHAKE;
-
-    ssize_t sent = sendto(sockfd, &pkt, sizeof(pkt), 0,
-                          (struct sockaddr *)server_addr, sizeof(*server_addr));
-    if (sent < 0) { perror("sendto handshake"); return -1; }
-
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(sockfd, &fds);
-    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
-    int ret = select(sockfd + 1, &fds, NULL, NULL, &tv);
-    if (ret <= 0) {
-        return -1;
-    }
-
-    uint8_t buffer[BUFFER_SIZE];
-    socklen_t addr_len = sizeof(*server_addr);
-    ssize_t recv_len = recvfrom(sockfd, buffer, BUFFER_SIZE, 0,
-                                (struct sockaddr *)server_addr, &addr_len);
-
-    if (recv_len < (ssize_t)sizeof(gost_packet_t)) {
-        return -1;
-    }
-
-    const gost_packet_t *resp = (const gost_packet_t *)buffer;
-    if (ntohl(resp->magic) != GOST_PROXY_MAGIC || resp->type != PKT_HANDSHAKE) {
-        return -1;
-    }
-
-    session.session_id = ntohll(resp->session_id);
-    session.active = 1;
-    session.counter = 0;
-    memset(session.nonce, 0, NONCE_SIZE);
-    memcpy(session.nonce, &session.session_id, 8);
-    memcpy(session.expanded_key, expanded_key, 160);
-
-    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -79,8 +44,6 @@ int main(int argc, char *argv[]) {
         config_path = argv[1];
 
     config_defaults(&cfg);
-    strcpy(cfg.server_ip, "109.122.195.152");
-    cfg.server_port = 10443;
 
     if (config_load(&cfg, config_path) == 0)
         printf("[CONFIG] Загружен: %s\n", config_path);
@@ -105,24 +68,34 @@ int main(int argc, char *argv[]) {
     }
     kuznyechik_set_key(client_key, expanded_key);
 
-    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) { perror("socket"); return 1; }
-
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(cfg.server_port);
-    if (inet_pton(AF_INET, cfg.server_ip, &server_addr.sin_addr) <= 0) {
-        printf("Ошибка: неверный IP-адрес сервера\n");
-        close(sockfd);
+    /* Подключаемся через QUIC */
+    if (quic_client_connect(&quic_client, cfg.server_ip, cfg.server_port, client_key) != 0) {
+        printf("Ошибка QUIC подключения\n");
+        log_error("QUIC connect failed");
         return 1;
     }
 
-    if (send_handshake(sockfd, &server_addr) != 0) {
+    /* Получаем session_id из handshake */
+    gost_packet_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    ssize_t recv_len = quic_client_recv(&quic_client, (uint8_t*)&pkt, sizeof(pkt), 5000);
+    if (recv_len < (ssize_t)sizeof(gost_packet_t)) {
         printf("Ошибка handshake\n");
-        close(sockfd);
+        quic_client_close(&quic_client);
         return 1;
     }
+    if (ntohl(pkt.magic) != GOST_PROXY_MAGIC || pkt.type != PKT_HANDSHAKE) {
+        printf("Ошибка handshake: неверный тип пакета\n");
+        quic_client_close(&quic_client);
+        return 1;
+    }
+    session.session_id = ntohll(pkt.session_id);
+    session.active = 1;
+    session.counter = 0;
+    memset(session.nonce, 0, NONCE_SIZE);
+    memcpy(session.nonce, &session.session_id, 8);
+    memcpy(session.expanded_key, expanded_key, 160);
+    log_info("QUIC session_id=%llu", (unsigned long long)session.session_id);
 
     /* Запускаем SOCKS5-прокси */
     printf("\n");
@@ -142,11 +115,20 @@ int main(int argc, char *argv[]) {
     printf("\n");
 
     if (socks5_start(SOCKS5_PORT, cfg.server_ip, cfg.server_port, expanded_key,
-                     session.nonce, session.session_id, sockfd, &server_addr,
-                     &session.counter) != 0) {
+                     session.nonce, session.session_id,
+                     &quic_client, &session.counter) != 0) {
         printf("Ошибка запуска SOCKS5-прокси\n");
-        close(sockfd);
+        quic_client_close(&quic_client);
         return 1;
+    }
+
+    /* Запуск keepalive-потока */
+    pthread_t ka_thread;
+    if (pthread_create(&ka_thread, NULL, keepalive_thread, &quic_client) != 0) {
+        perror("[KEEPALIVE] pthread_create");
+    } else {
+        pthread_detach(ka_thread);
+        log_info("Keepalive thread started (every %d сек)", KEEPALIVE_INTERVAL);
     }
 
     /* Основной цикл — ждём завершения */
@@ -156,15 +138,35 @@ int main(int argc, char *argv[]) {
 
     socks5_stop();
 
+    /* Отправляем disconnect */
     gost_packet_t disconnect;
     memset(&disconnect, 0, sizeof(disconnect));
     disconnect.magic = htonl(GOST_PROXY_MAGIC);
     disconnect.type = PKT_DISCONNECT;
     disconnect.session_id = htonll(session.session_id);
-    sendto(sockfd, &disconnect, sizeof(disconnect), 0,
-           (struct sockaddr *)&server_addr, sizeof(server_addr));
+    quic_client_send(&quic_client, (const uint8_t*)&disconnect, sizeof(disconnect));
+
     log_info("Клиент завершается...");
+    quic_client_close(&quic_client);
     log_close();
-    close(sockfd);
     return 0;
+}
+
+/* Периодическая отправка keepalive */
+static void* keepalive_thread(void *arg) {
+    quic_client_t *qc = (quic_client_t *)arg;
+    while (running) {
+        sleep(KEEPALIVE_INTERVAL);
+        if (!running) break;
+        gost_packet_t pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.magic = htonl(GOST_PROXY_MAGIC);
+        pkt.type = PKT_KEEPALIVE;
+        pkt.session_id = htonll(session.session_id);
+        ssize_t sent = quic_client_send(qc, (const uint8_t*)&pkt, sizeof(pkt));
+        if (sent < 0) {
+            log_debug("keepalive send failed: %s", strerror(errno));
+        }
+    }
+    return NULL;
 }

@@ -22,4 +22,7 @@ int config_load(gost_config_t *cfg, const char *path);
 /* Значения по умолчанию */
 void config_defaults(gost_config_t *cfg);
 
+/* Освобождение памяти конфигурации */
+void config_free(gost_config_t *cfg);
+
 #endif /* CONFIG_H */

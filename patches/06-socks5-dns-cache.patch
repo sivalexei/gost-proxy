@@ -1,0 +1,157 @@
+--- a/src/network/socks5.h
++++ b/src/network/socks5.h
+@@ -1,6 +1,7 @@
+ #ifndef SOCKS5_H
+ #define SOCKS5_H
++#include <stdint.h>
+ 
+ #define SOCKS5_PORT 1080
+ 
+ /* Запуск SOCKS5-прокси */
+@@ -10,4 +11,6 @@ int socks5_start(uint16_t port, const char *server_ip, uint16_t server_port,
+                    int existing_udp_fd, struct sockaddr_in *server_addr,
+                    uint32_t *session_counter);
+ 
+ /* Остановка SOCKS5-прокси */
+ void socks5_stop(void);
+ 
++/* Очистка DNS-кэша */
++void dns_cache_cleanup(void);
+ 
+ #endif /* SOCKS5_H */
+--- a/src/network/socks5.c
++++ b/src/network/socks5.c
+@@ -1,6 +1,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ #include <unistd.h>
+ #include <signal.h>
+ #include <pthread.h>
+@@ -15,6 +16,55 @@
+ #include "socks5.h"
+ 
+ #define SOCKS5_BUF_SIZE 4096
++#define DNS_CACHE_SIZE 64
++#define DNS_CACHE_TTL 300  /* 5 минут */
+ 
+ static volatile int socks5_running = 0;
+ static int socks5_listen_fd = -1;
+@@ -22,6 +72,55 @@ static gost_session_t proxy_session;
+ static char proxy_server_ip[64];
+ static uint16_t proxy_server_port;
+ static int proxy_udp_fd = -1;
+ static struct sockaddr_in proxy_server_addr;
+-static uint32_t *shared_counter = NULL;
++static uint32_t *shared_counter = NULL;
++
++/* DNS-кэш */
++typedef struct {
++    char domain[256];
++    uint32_t addr;  /* network byte order */
++    time_t expiry;
++    uint8_t resolved;
++} dns_cache_entry_t;
++
++static dns_cache_entry_t dns_cache[DNS_CACHE_SIZE];
++static pthread_mutex_t dns_cache_lock = PTHREAD_MUTEX_INITIALIZER;
++
++/* Найти запись в DNS-кэше */
++static int dns_cache_lookup(const char *domain, uint32_t *out_addr) {
++    pthread_mutex_lock(&dns_cache_lock);
++    time_t now = time(NULL);
++    for (int i = 0; i < DNS_CACHE_SIZE; i++) {
++        if (dns_cache[i].resolved &&
++            strcmp(dns_cache[i].domain, domain) == 0 &&
++            now < dns_cache[i].expiry) {
++            *out_addr = dns_cache[i].addr;
++            pthread_mutex_unlock(&dns_cache_lock);
++            return 0;
++        }
++        /* Протухшие записи — удаляем */
++        if (dns_cache[i].resolved && now >= dns_cache[i].expiry) {
++            dns_cache[i].resolved = 0;
++        }
++    }
++    pthread_mutex_unlock(&dns_cache_lock);
++    return -1;
++}
++
++/* Добавить запись в DNS-кэш */
++static void dns_cache_store(const char *domain, uint32_t addr) {
++    pthread_mutex_lock(&dns_cache_lock);
++    /* Ищем свободный слот или перетираем первую попавшуюся */
++    int slot = -1;
++    for (int i = 0; i < DNS_CACHE_SIZE; i++) {
++        if (!dns_cache[i].resolved) {
++            slot = i;
++            break;
++        }
++    }
++    if (slot < 0) slot = 0; /* Перезаписываем */
++    strncpy(dns_cache[slot].domain, domain, sizeof(dns_cache[slot].domain) - 1);
++    dns_cache[slot].domain[sizeof(dns_cache[slot].domain) - 1] = '\0';
++    dns_cache[slot].addr = addr;
++    dns_cache[slot].expiry = time(NULL) + DNS_CACHE_TTL;
++    dns_cache[slot].resolved = 1;
++    pthread_mutex_unlock(&dns_cache_lock);
++}
++
++/* Очистка DNS-кэша */
++void dns_cache_cleanup(void) {
++    pthread_mutex_lock(&dns_cache_lock);
++    for (int i = 0; i < DNS_CACHE_SIZE; i++) {
++        dns_cache[i].resolved = 0;
++    }
++    pthread_mutex_unlock(&dns_cache_lock);
++}
+ 
+ /* Отправка данных через gost-proxy туннель (с чанкированием) */
+@@ -218,11 +317,20 @@ static void* socks5_client_thread(void *arg) {
+     log_info("SOCKS5 CONNECT %s:%u", target_host, target_port);
+ 
+     /* Генерируем conn_id для этого соединения */
+     uint32_t my_conn_id = __sync_fetch_and_add(&next_conn_id, 1);
+ 
+-    /* Резолвим домен через DNS (клиентский резолв) */
+-    struct hostent *he = gethostbyname(target_host);
+-    if (!he) {
+-        uint8_t err[] = { 0x05, 0x04, 0x00, 0x01, 0,0,0,0, 0,0 };
+-        send(client_fd, err, 10, 0);
+-        close(client_fd);
+-        return NULL;
++    /* Резолвим адрес с использованием DNS-кэша */
++    struct in_addr target_addr;
++    int resolved = 0;
++
++    /* Сначала пробуем кэш */
++    uint32_t cached_addr;
++    if (dns_cache_lookup(target_host, &cached_addr) == 0) {
++        target_addr.s_addr = cached_addr;
++        resolved = 1;
++        log_info("DNS cache hit: %s → %s", target_host, inet_ntoa(target_addr));
++    }
++
++    if (!resolved) {
++        /* DNS-резолв */
++        struct hostent *he = gethostbyname(target_host);
++        if (!he) {
++            uint8_t err[] = { 0x05, 0x04, 0x00, 0x01, 0,0,0,0, 0,0 };
++            send(client_fd, err, 10, 0);
++            close(client_fd);
++            return NULL;
++        }
++        target_addr = *(struct in_addr *)he->h_addr_list[0];
++        dns_cache_store(target_host, target_addr.s_addr);
++        log_info("DNS resolved: %s → %s", target_host, inet_ntoa(target_addr));
+     }
+ 
+     /* Формируем CONNECT-запрос для gost-proxy */
+     uint8_t connect_data[8];
+     connect_data[0] = 0x01; /* CMD_CONNECT */
+     connect_data[1] = 0x01; /* IPv4 */
+-    memcpy(&connect_data[2], target_addr, 4);
++    memcpy(&connect_data[2], &target_addr, 4);
+     connect_data[6] = (target_port >> 8) & 0xFF;
+     connect_data[7] = target_port & 0xFF;

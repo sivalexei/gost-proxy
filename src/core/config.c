@@ -146,3 +146,8 @@ int config_load(gost_config_t *cfg, const char *path) {
     free(json);
     return 0;
 }
+
+/* Освобождение памяти конфигурации */
+void config_free(gost_config_t *cfg) {
+    (void)cfg;  /* В текущей реализации нет динамических выделений */
+}

@@ -1,0 +1,61 @@
+--- a/src/network/socks5.c
++++ b/src/network/socks5.c
+@@ -67,27 +67,27 @@ static int tunnel_recv(uint8_t *data, size_t max_len __attribute__((unused)), in
+     struct sockaddr_in from;
+     socklen_t from_len;
+ 
+-    int elapsed = 0;
+-    while (elapsed < timeout_ms) {
+-        from_len = sizeof(from);
+-        ssize_t n = recvfrom(proxy_udp_fd, buffer, sizeof(buffer), MSG_DONTWAIT,
+-                             (struct sockaddr *)&from, &from_len);
+-        if (n > 0) {
+-            if (n >= (ssize_t)sizeof(gost_packet_t)) {
+-                const gost_packet_t *pkt = (const gost_packet_t *)buffer;
+-                if (ntohl(pkt->magic) == GOST_PROXY_MAGIC && pkt->type == PKT_DATA) {
+-                    uint32_t pkt_conn_id = ntohl(pkt->conn_id);
+-                    /* Пропускаем пакеты для другого соединения */
+-                    if (pkt_conn_id != expect_conn_id) {
+-                        usleep(1000);
+-                        elapsed += 1;
+-                        continue;
+-                    }
+-                    size_t data_len;
+-                    if (protocol_unpack_data(pkt, data, &data_len, NULL,
+-                                             proxy_session.expanded_key,
+-                                             proxy_session.nonce,
+-                                             counter) == 0) {
+-                        return (int)data_len;
+-                    }
++    struct pollfd pfd = { .fd = proxy_udp_fd, .events = POLLIN };
++    int remaining_ms = timeout_ms;
++    while (remaining_ms > 0) {
++        int poll_ret = poll(&pfd, 1, remaining_ms);
++        if (poll_ret <= 0) break; /* Таймаут или ошибка */
++        if (pfd.revents & POLLIN) {
++            from_len = sizeof(from);
++            ssize_t n = recvfrom(proxy_udp_fd, buffer, sizeof(buffer), MSG_DONTWAIT,
++                                 (struct sockaddr *)&from, &from_len);
++            if (n > 0 && n >= (ssize_t)sizeof(gost_packet_t)) {
++                const gost_packet_t *pkt = (const gost_packet_t *)buffer;
++                if (ntohl(pkt->magic) == GOST_PROXY_MAGIC && pkt->type == PKT_DATA) {
++                    uint32_t pkt_conn_id = ntohl(pkt->conn_id);
++                    if (pkt_conn_id != expect_conn_id) continue;
++                    size_t data_len;
++                    if (protocol_unpack_data(pkt, data, &data_len, NULL,
++                                             proxy_session.expanded_key,
++                                             proxy_session.nonce,
++                                             counter) == 0) {
++                        return (int)data_len;
++                    }
+                 }
+             }
+-        }
+-        usleep(1000); /* 1ms */
+-        elapsed += 10;
++        } else {
++            remaining_ms -= 10;
++        }
+     }
+     return -1;
+ }

@@ -1,0 +1,22 @@
+--- a/src/core/config.h
++++ b/src/core/config.h
+@@ -16,5 +16,7 @@ typedef struct {
+ 
+ /* Значения по умолчанию */
+ void config_defaults(gost_config_t *cfg);
+ 
++/* Освобождение памяти конфигурации */
++void config_free(gost_config_t *cfg);
+ 
+ #endif /* CONFIG_H */
+--- a/src/core/config.c
++++ b/src/core/config.c
+@@ -120,3 +120,8 @@ int config_load(gost_config_t *cfg, const char *path) {
+     free(json);
+     return 0;
+ }
++
++/* Освобождение памяти конфигурации */
++void config_free(gost_config_t *cfg) {
++    (void)cfg;  /* В текущей реализации нет динамических выделений */
++}

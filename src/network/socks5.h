@@ -2,6 +2,7 @@
 #define SOCKS5_H
 
 #include <stdint.h>
+#include "quic_layer.h"
 
 #define SOCKS5_PORT 1080
 
@@ -9,7 +10,7 @@
 int socks5_start(uint16_t port, const char *server_ip, uint16_t server_port,
                  const uint8_t *expanded_key, const uint8_t *nonce,
                  uint64_t session_id,
-                 int existing_udp_fd, struct sockaddr_in *server_addr,
+                 quic_client_t *quic_client,
                  uint32_t *session_counter);
 
 /* Остановка */

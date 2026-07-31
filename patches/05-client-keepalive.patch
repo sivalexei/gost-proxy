@@ -1,0 +1,72 @@
+--- a/src/core/client.c
++++ b/src/core/client.c
+@@ -1,6 +1,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ #include <unistd.h>
+ #include <signal.h>
+ #include <errno.h>
+@@ -21,6 +22,10 @@ static int sockfd = -1;
+ static struct sockaddr_in server_addr;
+ static socklen_t server_addr_len = sizeof(server_addr);
+ 
++#define KEEPALIVE_INTERVAL 30  /* секунд */
++static time_t last_keepalive = 0;
++static pthread_mutex_t keepalive_lock = PTHREAD_MUTEX_INITIALIZER;
++
+ static void signal_handler(int sig) {
+     (void)sig;
+     running = 0;
+@@ -36,10 +41,28 @@ static int send_handshake(int sockfd, struct sockaddr_in *server_addr) {
+     return 0;
+ }
+ 
++/* Отправка keepalive-пакета */
++static void send_keepalive(int udp_fd, struct sockaddr_in *addr) {
++    gost_packet_t pkt;
++    memset(&pkt, 0, sizeof(pkt));
++    pkt.magic = htonl(GOST_PROXY_MAGIC);
++    pkt.type = PKT_KEEPALIVE;
++    pkt.session_id = htonll(session.session_id);
++    ssize_t sent = sendto(udp_fd, &pkt, sizeof(pkt), 0,
++                          (struct sockaddr *)addr, sizeof(*addr));
++    if (sent < 0 && errno != EINTR) {
++        log_debug("keepalive sendto: %s", strerror(errno));
++    }
++}
++
++/* Периодическая отправка keepalive */
++static void* keepalive_thread(void *arg) {
++    while (running) {
++        sleep(KEEPALIVE_INTERVAL);
++        if (!running) break;
++        pthread_mutex_lock(&keepalive_lock);
++        send_keepalive(sockfd, &server_addr);
++        pthread_mutex_unlock(&keepalive_lock);
++    }
++    return NULL;
++}
+ 
+ int main(int argc, char *argv[]) {
+@@ -117,6 +140,14 @@ int main(int argc, char *argv[]) {
+     printf("\n");
+ 
++    /* Запуск keepalive-потока */
++    pthread_t ka_thread;
++    if (pthread_create(&ka_thread, NULL, keepalive_thread, NULL) != 0) {
++        perror("[KEEPALIVE] pthread_create");
++    } else {
++        pthread_detach(ka_thread);
++        log_info("Keepalive thread started (every %d сек)", KEEPALIVE_INTERVAL);
++    }
++
+     /* Основной цикл — ждём завершения */
+     while (running) {
+         sleep(1);
+@@ -127,6 +158,12 @@ int main(int argc, char *argv[]) {
+     log_close();
+     close(sockfd);
+     return 0;
+ }
