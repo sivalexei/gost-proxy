@@ -21,6 +21,7 @@
 #include "protocol.h"
 #include "config.h"
 #include "log.h"
+#include <ctype.h>
 
 extern ssize_t tcp_write_all(int fd, const void *buf, size_t len);
 
@@ -189,9 +190,11 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
     }
 }
 static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len, const uint8_t *data, size_t len) {
-    if (len < 10) return;
+    if (len < 10) { log_debug("handle_packet: too short (%zu)", len); return; }
     const gost_packet_t *pkt = (const gost_packet_t *)data;
-    if (ntohl(pkt->magic) != GOST_PROXY_MAGIC) return;
+    uint32_t magic = ntohl(pkt->magic);
+    if (magic != GOST_PROXY_MAGIC) { log_debug("handle_packet: bad magic 0x%08x", magic); return; }
+    log_debug("handle_packet: type=%u, magic=0x%08x, len=%zu", pkt->type, magic, len);
     pthread_mutex_lock(&sessions_lock);
     switch (pkt->type) {
         case PKT_HANDSHAKE: {
@@ -199,7 +202,8 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             gost_session_t *session = create_session(session_id);
             if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
             gost_packet_t response; protocol_create_handshake(&response, session_id, session->expanded_key);
-            quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
+            ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
+            log_debug("HANDSHAKE response sent=%zd, client=%s", sent, inet_ntoa(client_addr->sin_addr));
             break;
         }
         case PKT_DATA: {
@@ -208,6 +212,25 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             break;
         }
         case PKT_KEEPALIVE: break;
+        case PKT_SIM_CHALLENGE: {
+            uint64_t session_id = ntohll(pkt->session_id);
+            gost_session_t *session = find_session(session_id);
+            if (!session) break;
+            uint8_t answer[32] = {0};
+            if (protocol_verify_cps_challenge(pkt, answer, sizeof(answer)) == 0) {
+                session->cps_enabled = 1;
+                memcpy(session->cps_response, answer, 32);
+                gost_packet_t resp;
+                memset(&resp, 0, sizeof(resp));
+                resp.magic = htonl(GOST_PROXY_MAGIC);
+                resp.type = PKT_SIM_CHALLENGE;
+                resp.session_id = htonll(session_id);
+                memcpy(resp.payload, answer, 32);
+                quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&resp, sizeof(resp));
+                log_info("CPS challenge verified (sid=%llu)", (unsigned long long)session_id);
+            }
+            break;
+        }
         case PKT_DISCONNECT: {
             uint64_t session_id = ntohll(pkt->session_id);
             uint32_t dc_cid = ntohl(pkt->conn_id);

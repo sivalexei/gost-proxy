@@ -25,13 +25,29 @@
 #define PKT_KEEPALIVE   0x03
 #define PKT_DISCONNECT  0x04
 
+/* Типы имитации (CPS) */
+#define PKT_SIM_QUIC        0x10
+#define PKT_SIM_DNS         0x11
+#define PKT_SIM_TLS         0x12
+#define PKT_SIM_CHALLENGE   0x13
+
+/* Динамические заголовки */
+#define HEADER_PERM_ENABLED 1
+#define HEADER_SEED_SIZE    8
+#define HEADER_FIELD_COUNT  4
+
+/* Случайный padding */
+#define PADDING_ENABLED     1
+#define PADDING_MIN_BYTES   8
+#define PADDING_MAX_BYTES   128
+
 /* Размеры полей */
 #define SESSION_ID_SIZE 8
 #define AUTH_TAG_SIZE   16
 #define NONCE_SIZE      12
 #define MAX_PAYLOAD     1400
 
-/* Структура пакета протокола */
+/* Структура пакета протокола (фиксированный порядок полей) */
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint8_t  type;
@@ -41,6 +57,19 @@ typedef struct __attribute__((packed)) {
     uint8_t  auth_tag[AUTH_TAG_SIZE];
 } gost_packet_t;
 
+/* Порядок полей при динамической перестановке */
+typedef struct {
+    uint8_t  field_order[HEADER_FIELD_COUNT]; /* индексы полей в перестановке */
+    uint8_t  seed[HEADER_SEED_SIZE];          /* seed для генерации perестановки */
+    uint32_t padding_len;                     /* длина padding в байтах */
+} header_permutation_t;
+
+/* Перестановки полей заголовка: [magic, type, conn_id, session_id] */
+#define FLD_MAGIC   0
+#define FLD_TYPE    1
+#define FLD_CONN_ID 2
+#define FLD_SESS_ID 3
+
 /* Клиентская сессия */
 typedef struct {
     uint64_t session_id;
@@ -49,6 +78,13 @@ typedef struct {
     uint8_t  nonce[NONCE_SIZE];
     uint32_t counter;
     int      active;
+    /* Динамические заголовки */
+    uint8_t  header_seed[HEADER_SEED_SIZE];
+    uint8_t  header_perm[HEADER_FIELD_COUNT]; /* perестановка полей */
+    /* CPS имитация */
+    uint8_t  cps_enabled;
+    uint8_t  cps_challenge[32];
+    uint8_t  cps_response[32];
 } gost_session_t;
 
 #endif /* GOST_COMMON_H */

@@ -1,13 +1,19 @@
 /*
- * ГОСТ Р 34.12-2015 (Кузнечик) — implementations based on RFC 7801.
+ * ГОСТ Р 34.12-2015 (Кузнечик) — AVX2-оптимизация
  * Block size: 128 bits, Key size: 256 bits, 10 rounds.
+ * Based on RFC 7801.
  */
 #include <string.h>
 #include <stdint.h>
 #include "kuznyechik.h"
+#include "gost_common.h"
 
+/* ===== AVX2 helper functions (from kuznyechik.asm) ===== */
+extern void kuznyechik_S_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
+extern void kuznyechik_L_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
+extern void kuznyechik_inv_S_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
+extern void kuznyechik_L_inv_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
 /* ===== S-box (π) and inverse S-box (π⁻¹) from RFC 7801 §4.1 ===== */
-
 static const uint8_t S[256] = {
     252,238,221, 17,207,110, 49, 22,251,196,250,218, 35,197,  4, 77,
     233,119,240,219,147, 46,153,186, 23, 54,241,187, 20,205, 95,193,
@@ -46,6 +52,61 @@ static const uint8_t S_inv[256] = {
      18, 26, 72,104,245,129,139,199,214, 32, 10,  8,  0, 76,215,116
 };
 
+/* ===== S and S⁻¹ substitution (byte-wise) ===== */
+static void S_substitute(uint8_t *block) {
+    for (int i = 0; i < 16; i++)
+        block[i] = S[block[i]];
+}
+
+static void S_inv_substitute(uint8_t *block) {
+    for (int i = 0; i < 16; i++)
+        block[i] = S_inv[block[i]];
+}
+
+/* ===== Precompute 4096-byte tables for AVX2 ===== */
+static uint8_t sbox_table_avx2[4096];
+static uint8_t inv_sbox_table_avx2[4096];
+static uint8_t L_table_avx2[4096];
+static uint8_t inv_L_table_avx2[4096];
+
+static void precompute_avx2_tables(void) __attribute__((constructor));
+
+static uint8_t l_transform(const uint8_t *block);
+static uint8_t gf_mul(uint8_t a, uint8_t b);
+
+static uint8_t gf_pow(uint8_t a, int n) {
+    if (n == 0) return 1;
+    uint8_t r = 1;
+    for (int i = 0; i < n; i++)
+        r = gf_mul(r, a);
+    return r;
+}
+
+static uint8_t l_transform_byte(uint8_t b) {
+    uint8_t block[16];
+    memset(block, 0, 16);
+    block[0] = b;
+    return l_transform(block);
+}
+
+void kuznyechik_precompute_tables(uint8_t *sbox_tbl, uint8_t *inv_sbox_tbl,
+                                   uint8_t *L_tbl, uint8_t *inv_L_tbl) {
+    for (int v = 0; v < 256; v++) {
+        for (int i = 0; i < 16; i++) {
+            uint8_t p = gf_pow((uint8_t)v, i);
+            sbox_tbl[v * 16 + i] = S[p];
+            inv_sbox_tbl[v * 16 + i] = S_inv[p];
+            L_tbl[v * 16 + i] = l_transform_byte(p);
+            inv_L_tbl[v * 16 + i] = l_transform_byte(p);
+        }
+    }
+}
+
+static void precompute_avx2_tables(void) {
+    kuznyechik_precompute_tables(sbox_table_avx2, inv_sbox_table_avx2,
+                                  L_table_avx2, inv_L_table_avx2);
+}
+
 /* ===== GF(2^8) arithmetic: p(x) = x^8+x^7+x^6+x+1 (0xC3) ===== */
 
 static uint8_t gf_mul(uint8_t a, uint8_t b) {
@@ -61,10 +122,6 @@ static uint8_t gf_mul(uint8_t a, uint8_t b) {
 }
 
 /* ===== Linear transformation l: (V_8)^16 -> V_8 ===== */
-/* l(b[15],...,b[0]) = 0x94*b[15] ⊕ 0x20*b[14] ⊕ 0x85*b[13] ⊕ 0x10*b[12]
-                      ⊕ 0xC2*b[11] ⊕ 0xC0*b[10] ⊕ 0x01*b[9] ⊕ 0xFB*b[8]
-                      ⊕ 0x01*b[7] ⊕ 0xC0*b[6] ⊕ 0xC2*b[5] ⊕ 0x10*b[4]
-                      ⊕ 0x85*b[3] ⊕ 0x20*b[2] ⊕ 0x94*b[1] ⊕ 0x01*b[0] */
 static const uint8_t L_VEC[16] = {
     0x94, 0x20, 0x85, 0x10, 0xC2, 0xC0, 0x01, 0xFB,
     0x01, 0xC0, 0xC2, 0x10, 0x85, 0x20, 0x94, 0x01
@@ -78,15 +135,13 @@ static uint8_t l_transform(const uint8_t *block) {
 }
 
 /* ===== R: cyclic shift right + l ===== */
-/* R(a_15||...||a_0) = l(a_15,...,a_0) || a_15 || ... || a_1 */
 static void R_transform(uint8_t *block) {
     uint8_t new_byte = l_transform(block);
     memmove(block + 1, block, 15);
     block[0] = new_byte;
 }
 
-/* R⁻¹: shift left + l on result */
-/* R⁻¹(a_15||...||a_0) = a_14 || ... || a_0 || l(a_14,...,a_0,a_15) */
+/* ===== R⁻¹: shift left + l on result ===== */
 static void R_inv_transform(uint8_t *block) {
     uint8_t temp[16];
     memcpy(temp, block + 1, 15);
@@ -97,7 +152,6 @@ static void R_inv_transform(uint8_t *block) {
 }
 
 /* ===== L = R^16, L⁻¹ = (R⁻¹)^16 ===== */
-
 static void L_transform(uint8_t *block) {
     for (int i = 0; i < 16; i++)
         R_transform(block);
@@ -108,43 +162,7 @@ static void L_inv_transform(uint8_t *block) {
         R_inv_transform(block);
 }
 
-/* ===== S and S⁻¹ substitution (byte-wise) ===== */
-
-static void S_substitute(uint8_t *block) {
-    for (int i = 0; i < 16; i++)
-        block[i] = S[block[i]];
-}
-
-static void S_inv_substitute(uint8_t *block) {
-    for (int i = 0; i < 16; i++)
-        block[i] = S_inv[block[i]];
-}
-
-/* ===== LSX = L ∘ S ∘ X[k] ===== */
-
-static void LSX(uint8_t *block, const uint8_t *round_key) {
-    for (int i = 0; i < 16; i++)
-        block[i] ^= round_key[i];
-    S_substitute(block);
-    L_transform(block);
-}
-
-/* ===== L⁻¹S⁻¹X[k] — inverse of LSX ===== */
-
-static void LSX_inv(uint8_t *block, const uint8_t *round_key) {
-    for (int i = 0; i < 16; i++)
-        block[i] ^= round_key[i];
-    L_inv_transform(block);
-    S_inv_substitute(block);
-}
-
 /* ===== Key schedule (RFC 7801 §4.4) ===== */
-/* C_i = L(Vec_128(i)), i=1..8  (used in groups of 8) */
-/* F[k](a,b) = (LSX[k](a) ⊕ b, a) */
-/* (K_3,K_4) = F[C_8]...F[C_1](K_1,K_2) */
-/* (K_5,K_6) = F[C_16]...F[C_9](K_3,K_4) */
-/* etc. */
-
 static void compute_Ci(uint8_t *out, uint8_t i) {
     memset(out, 0, 16);
     out[15] = i;
@@ -154,7 +172,10 @@ static void compute_Ci(uint8_t *out, uint8_t i) {
 static void F_round(uint8_t *a, uint8_t *b, const uint8_t *C) {
     uint8_t tmp[16];
     memcpy(tmp, a, 16);
-    LSX(tmp, C);
+    for (int i = 0; i < 16; i++)
+        tmp[i] ^= C[i];
+    S_substitute(tmp);
+    L_transform(tmp);
     for (int i = 0; i < 16; i++)
         tmp[i] ^= b[i];
     memcpy(b, a, 16);
@@ -163,65 +184,64 @@ static void F_round(uint8_t *a, uint8_t *b, const uint8_t *C) {
 
 static void key_schedule(const uint8_t *key, uint8_t *expanded) {
     uint8_t K[2][16];
-    memcpy(K[0], key, 16);       /* K_1 */
-    memcpy(K[1], key + 16, 16);  /* K_2 */
+    memcpy(K[0], key, 16);
+    memcpy(K[1], key + 16, 16);
 
-    /* Store K_1, K_2 */
     memcpy(expanded, K[0], 16);
     memcpy(expanded + 16, K[1], 16);
 
-    /* Generate K_3..K_10 in groups of 8 F rounds */
     for (int g = 0; g < 4; g++) {
         for (int j = 1; j <= 8; j++) {
             uint8_t C[16];
             compute_Ci(C, (uint8_t)(g * 8 + j));
             F_round(K[0], K[1], C);
         }
-        /* After 8 F rounds: K[0]=K_{2g+3}, K[1]=K_{2g+4} */
         memcpy(expanded + (2 * g + 2) * 16, K[0], 16);
         memcpy(expanded + (2 * g + 3) * 16, K[1], 16);
     }
 }
 
 /* ===== Block encryption (RFC 7801 §4.5.1) ===== */
-/* E(a) = X[K_10] ∘ LSX[K_9] ∘ ... ∘ LSX[K_1](a) */
-
 static void encrypt_block_c(uint8_t *block, const uint8_t *expanded) {
-    for (int i = 0; i < 9; i++)
-        LSX(block, expanded + i * 16);
-    /* Final X[K_10] only (no S, no L) */
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 16; j++)
+            block[j] ^= expanded[i * 16 + j];
+        S_substitute(block);
+        L_transform(block);
+    }
     for (int i = 0; i < 16; i++)
         block[i] ^= expanded[9 * 16 + i];
 }
 
 /* ===== Block decryption (RFC 7801 §4.5.2) ===== */
-/* D(b) = X[K_1] ∘ L⁻¹S⁻¹X[K_2] ∘ ... ∘ L⁻¹S⁻¹X[K_10](b) */
-
 static void decrypt_block_c(uint8_t *block, const uint8_t *expanded) {
-    /* D(b) = X[K_1] ∘ L⁻¹S⁻¹X[K_2] ∘ ... ∘ L⁻¹S⁻¹X[K_10](b) */
-    /* Apply L⁻¹S⁻¹X[K_10] down to L⁻¹S⁻¹X[K_2] */
-    for (int i = 9; i >= 1; i--)
-        LSX_inv(block, expanded + i * 16);
-    /* Final X[K_1] */
+    for (int i = 9; i >= 1; i--) {
+        for (int j = 0; j < 16; j++)
+            block[j] ^= expanded[i * 16 + j];
+        L_inv_transform(block);
+        S_inv_substitute(block);
+    }
     for (int i = 0; i < 16; i++)
         block[i] ^= expanded[i];
 }
 
 /* ===== Public API ===== */
 
-void kuznyechik_set_key(const uint8_t *key, uint8_t *expanded_key) {
+/* Все публичные функции определены в kuznyechik.asm (AVX2-оптимизация)
+ * Эти C-функции — fallback-реализации, не экспортируются */
+static void kuznyechik_set_key_c(const uint8_t *key, uint8_t *expanded_key) {
     key_schedule(key, expanded_key);
 }
 
-void kuznyechik_encrypt_block(uint8_t *block, const uint8_t *expanded_key) {
+static void kuznyechik_encrypt_block_c(uint8_t *block, const uint8_t *expanded_key) {
     encrypt_block_c(block, expanded_key);
 }
 
-void kuznyechik_decrypt_block(uint8_t *block, const uint8_t *expanded_key) {
+static void kuznyechik_decrypt_block_c(uint8_t *block, const uint8_t *expanded_key) {
     decrypt_block_c(block, expanded_key);
 }
 
-void kuznyechik_encrypt_ctr(
+static void kuznyechik_encrypt_ctr_c(
     const uint8_t *in, uint8_t *out, size_t len,
     const uint8_t *expanded_key, const uint8_t *nonce
 ) {
@@ -236,14 +256,13 @@ void kuznyechik_encrypt_ctr(
         for (size_t i = 0; i < block_len; i++)
             out[offset + i] = in[offset + i] ^ keystream[i];
 
-        /* Increment counter (big-endian) */
         for (int j = 15; j >= 0; j--) {
             if (++counter[j] != 0) break;
         }
     }
 }
 
-void kuznyechik_encrypt_ecb(
+static void kuznyechik_encrypt_ecb_c(
     const uint8_t *in, uint8_t *out, size_t len,
     const uint8_t *expanded_key
 ) {

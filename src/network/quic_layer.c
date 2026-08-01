@@ -67,11 +67,11 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
 
-    uint8_t resp[256];
+    uint8_t resp[MAX_PAYLOAD + 32 + 1];
     socklen_t rlen = sizeof(srv);
     ssize_t n = recvfrom(qc->server_fd, resp, sizeof(resp), 0,
                          (struct sockaddr*)&srv, &rlen);
-    if (n < (ssize_t)sizeof(gost_packet_t)) {
+    if (n < (ssize_t)(4 + 1 + 4 + 8)) {
         log_error("QUIC: handshake response short");
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
@@ -82,6 +82,7 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
     qc->active = 1;
+    memcpy(qc->session_id, &r->session_id, 8);
     log_info("QUIC: handshake OK (session_id=%llu)", (unsigned long long)ntohll(r->session_id));
     return 0;
 }

@@ -75,27 +75,77 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Получаем session_id из handshake */
-    gost_packet_t pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    ssize_t recv_len = quic_client_recv(&quic_client, (uint8_t*)&pkt, sizeof(pkt), 5000);
-    if (recv_len < (ssize_t)sizeof(gost_packet_t)) {
-        printf("Ошибка handshake\n");
-        quic_client_close(&quic_client);
-        return 1;
-    }
-    if (ntohl(pkt.magic) != GOST_PROXY_MAGIC || pkt.type != PKT_HANDSHAKE) {
-        printf("Ошибка handshake: неверный тип пакета\n");
-        quic_client_close(&quic_client);
-        return 1;
-    }
-    session.session_id = ntohll(pkt.session_id);
+    /* session_id получен из handshake в quic_client_connect */
+    memcpy(&session.session_id, quic_client.session_id, 8);
     session.active = 1;
     session.counter = 0;
     memset(session.nonce, 0, NONCE_SIZE);
     memcpy(session.nonce, &session.session_id, 8);
     memcpy(session.expanded_key, expanded_key, 160);
     log_info("QUIC session_id=%llu", (unsigned long long)session.session_id);
+
+    /* === CPS handshake === */
+    printf("\n[SECURITY] Инициализация CPS (Chaffing/Pretense System)...\n");
+
+    /* Генерируем seed из session_id */
+    uint8_t cps_seed[HEADER_SEED_SIZE];
+    protocol_generate_header_seed(session.session_id, cps_seed, HEADER_SEED_SIZE);
+
+    /* Отправляем fake пакеты для chaffing */
+    gost_packet_t fake_pkt;
+    memset(&fake_pkt, 0, sizeof(fake_pkt));
+    protocol_make_fake_quic(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
+    fake_pkt.session_id = htonll(session.session_id);
+    quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
+    log_info("CPS: fake QUIC packet sent");
+
+    memset(&fake_pkt, 0, sizeof(fake_pkt));
+    protocol_make_fake_dns(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
+    fake_pkt.session_id = htonll(session.session_id);
+    quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
+    log_info("CPS: fake DNS packet sent");
+
+    memset(&fake_pkt, 0, sizeof(fake_pkt));
+    protocol_make_fake_tls(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
+    fake_pkt.session_id = htonll(session.session_id);
+    quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
+    log_info("CPS: fake TLS packet sent");
+
+    /* Отправляем CPS challenge */
+    gost_packet_t pkt;
+    gost_packet_t cps_challenge;
+    uint8_t cps_challenge_out[32] = {0}, cps_answer[32] = {0};
+    memset(&cps_challenge, 0, sizeof(cps_challenge));
+    protocol_make_cps_challenge(&cps_challenge, cps_seed, HEADER_SEED_SIZE,
+                                 cps_challenge_out, cps_answer);
+    cps_challenge.session_id = htonll(session.session_id);
+    quic_client_send(&quic_client, (const uint8_t*)&cps_challenge, sizeof(cps_challenge));
+    log_info("CPS: challenge sent");
+
+    /* Ждём CPS response от сервера */
+    memset(&pkt, 0, sizeof(pkt));
+    ssize_t cps_recv_len = quic_client_recv(&quic_client, (uint8_t*)&pkt, sizeof(pkt), 3000);
+    if (cps_recv_len >= (ssize_t)sizeof(gost_packet_t) &&
+        ntohl(pkt.magic) == GOST_PROXY_MAGIC &&
+        pkt.type == PKT_SIM_CHALLENGE) {
+        /* Верифицируем challenge */
+        if (protocol_verify_cps_challenge(&pkt, cps_answer, sizeof(cps_answer)) == 0) {
+            session.cps_enabled = 1;
+            memcpy(session.cps_response, cps_answer, 32);
+            log_info("CPS: challenge verified successfully");
+            printf("[SECURITY] CPS handshake завершён успешно\n");
+        } else {
+            log_info("CPS: challenge verification failed (non-critical)");
+            printf("[SECURITY] CPS верификация не пройдена (не критично)\n");
+        }
+    } else {
+        log_info("CPS: no response received (non-critical)");
+        printf("[SECURITY] CPS ответ не получен (не критично)\n");
+    }
+
+    /* Инициализируем сессию с динамическими заголовками */
+    protocol_init_session(&session, expanded_key);
+    log_info("Session initialized with dynamic headers");
 
     /* Запускаем SOCKS5-прокси */
     printf("\n");

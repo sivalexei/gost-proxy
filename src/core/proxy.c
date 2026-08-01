@@ -87,14 +87,22 @@ static int send_to_server(uint32_t conn_id, const uint8_t *data, size_t data_len
     return 0;
 }
 
-static ssize_t recv_from_server(uint8_t *out, size_t out_len, uint32_t *out_conn_id) {
-    uint8_t buf[BUFFER_SIZE];
+/* Получить чистый пакет (без расшифровки) */
+static ssize_t recv_raw_packet(uint8_t *out, size_t out_len) {
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
     setsockopt(udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ssize_t recv_len = recvfrom(udp_fd, buf, sizeof(buf), 0, NULL, NULL);
+    ssize_t recv_len = recvfrom(udp_fd, out, out_len, 0, NULL, NULL);
+    return recv_len;
+}
+
+static ssize_t recv_from_server(uint8_t *out, size_t out_len, uint32_t *out_conn_id) {
+    uint8_t buf[BUFFER_SIZE];
+    ssize_t recv_len = recv_raw_packet(buf, sizeof(buf));
     if (recv_len < (ssize_t)sizeof(gost_packet_t)) return -1;
     const gost_packet_t *pkt = (const gost_packet_t *)buf;
     if (ntohl(pkt->magic) != GOST_PROXY_MAGIC) return -1;
+    /* Пропускаем handshake — его должен обработать вызывающий */
+    if (pkt->type == PKT_HANDSHAKE) return -1;
     uint8_t decrypted[MAX_PAYLOAD];
     size_t data_len;
     uint32_t pkt_conn_id;
@@ -299,19 +307,25 @@ int main(int argc, char *argv[]) {
                           (struct sockaddr *)&server_addr, server_addr_len);
     if (sent < 0) { perror("sendto handshake"); return 1; }
 
+    /* Handshake должен быть получен ДО запуска UDP listener, чтобы listener не перехватил ответ */
     uint8_t handshake_resp[BUFFER_SIZE];
-    uint32_t h_conn_id = 0;
-    ssize_t hlen = recv_from_server(handshake_resp, sizeof(handshake_resp), &h_conn_id);
-    if (hlen < 0) { log_error("No handshake response"); return 1; }
+    ssize_t hlen = recv_raw_packet(handshake_resp, sizeof(handshake_resp));
+    if (hlen < (ssize_t)sizeof(gost_packet_t)) { log_error("No handshake response (got %zd)", hlen); return 1; }
 
     const gost_packet_t *h_pkt = (const gost_packet_t *)handshake_resp;
-    if (ntohl(h_pkt->magic) != GOST_PROXY_MAGIC) { log_error("Bad handshake magic"); return 1; }
+    if (ntohl(h_pkt->magic) != GOST_PROXY_MAGIC) { log_error("Bad handshake magic 0x%08x", ntohl(h_pkt->magic)); return 1; }
     if (h_pkt->type != PKT_HANDSHAKE) { log_error("Bad handshake type: %u", h_pkt->type); return 1; }
 
     session_id = ntohll(h_pkt->session_id);
     server_counter = 0;
     log_info("Handshake OK: session_id=%lu, server_counter=%u",
              session_id, server_counter);
+
+    /* Запускаем UDP listener ПОСЛЕ handshake */
+    pthread_t udp_tid;
+    if (pthread_create(&udp_tid, NULL, udp_listener_thread, NULL) != 0) {
+        perror("pthread_create udp"); return 1;
+    }
 
     /* TCP listener для SOCKS5 */
     int tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -327,11 +341,6 @@ int main(int argc, char *argv[]) {
     }
     if (listen(tcp_fd, 128) < 0) { perror("listen"); return 1; }
     log_info("SOCKS5 listener on 127.0.0.1:%d", SOCKS5_PORT);
-
-    pthread_t udp_tid;
-    if (pthread_create(&udp_tid, NULL, udp_listener_thread, NULL) != 0) {
-        perror("pthread_create udp"); return 1;
-    }
 
     while (running) {
         struct pollfd pfd = { .fd = tcp_fd, .events = POLLIN };
