@@ -1,11 +1,15 @@
+; ============================================================
+; kuznyechik_tables.asm
+; Таблицы для алгоритма Кузнечик (ГОСТ Р 34.12-2015)
+; ============================================================
+
 default rel
 section .data
 align 64
 
 ; ===== Таблица прямого S-бокса (256 байт) =====
-; Каждое значение повторяется 16 раз, чтобы использовать vpshufb
-; (но vpshufb всё равно берёт только младшие 4 бита, поэтому это неверно,
-;  однако оставлено для совместимости с существующим кодом)
+; ВНИМАНИЕ: Каждое значение повторяется 16 раз для vpshufb
+; (vpshufb использует только младшие 4 бита)
 S_box_table:
     times 16 db 0xFC
     times 16 db 0xEE
@@ -139,130 +143,130 @@ S_box_table:
     times 16 db 0xF5
     times 16 db 0x24
     times 16 db 0xA9
-    times 16 db 0xE6
-    times 16 db 0x94
-    times 16 db 0x86
-    times 16 db 0xDC
-    times 16 db 0xE4
-    times 16 db 0x92
-    times 16 db 0x74
+    times 16 db 0x3E
+    times 16 db 0xA8
+    times 16 db 0x43
+    times 16 db 0xC9
+    times 16 db 0xD7
+    times 16 db 0x79
+    times 16 db 0xD6
+    times 16 db 0xF6
+    times 16 db 0x7C
+    times 16 db 0x22
+    times 16 db 0xB9
+    times 16 db 0x03
     times 16 db 0xE0
-    times 16 db 0x67
-    times 16 db 0x4C
-    times 16 db 0xF4
-    times 16 db 0xEA
+    times 16 db 0x0F
+    times 16 db 0xEC
+    times 16 db 0xDE
+    times 16 db 0x7A
+    times 16 db 0x94
+    times 16 db 0xB0
+    times 16 db 0xBC
+    times 16 db 0xDC
+    times 16 db 0xE8
+    times 16 db 0x28
     times 16 db 0x50
-    times 16 db 0x66
-    times 16 db 0xCC
-    times 16 db 0x6B
-    times 16 db 0xBD
-    times 16 db 0x8D
-    times 16 db 0x5E
-    times 16 db 0x73
     times 16 db 0x4E
-    times 16 db 0x45
-    times 16 db 0x64
-    times 16 db 0x3F
-    times 16 db 0x82
-    times 16 db 0x6C
-    times 16 db 0x9B
-    times 16 db 0x30
+    times 16 db 0x33
     times 16 db 0x0A
-    times 16 db 0x4B
-    times 16 db 0x5B
-    times 16 db 0x85
+    times 16 db 0x4A
+    times 16 db 0xA7
+    times 16 db 0x97
+    times 16 db 0x60
+    times 16 db 0x73
+    times 16 db 0x1E
+    times 16 db 0x00
+    times 16 db 0x62
+    times 16 db 0x44
+    times 16 db 0x1A
+    times 16 db 0xB8
+    times 16 db 0x38
+    times 16 db 0x82
+    times 16 db 0x64
+    times 16 db 0x9F
+    times 16 db 0x26
+    times 16 db 0x41
+    times 16 db 0xAD
+    times 16 db 0x45
+    times 16 db 0x46
+    times 16 db 0x92
+    times 16 db 0x27
+    times 16 db 0x5E
+    times 16 db 0x55
+    times 16 db 0x2F
+    times 16 db 0x8C
+    times 16 db 0xA3
+    times 16 db 0xA5
+    times 16 db 0x7D
+    times 16 db 0x69
+    times 16 db 0xD5
+    times 16 db 0x95
     times 16 db 0x3B
     times 16 db 0x07
-    times 16 db 0x88
-    times 16 db 0x63
-    times 16 db 0x03
-    times 16 db 0xE7
-    times 16 db 0x6E
-    times 16 db 0x4A
-    times 16 db 0x7C
-    times 16 db 0x49
-    times 16 db 0x18
-    times 16 db 0x1E
-    times 16 db 0x7A
-    times 16 db 0x44
-    times 16 db 0x59
-    times 16 db 0x2D
-    times 16 db 0x9F
-    times 16 db 0xAC
-    times 16 db 0x0F
-    times 16 db 0x1D
-    times 16 db 0x79
-    times 16 db 0x7D
-    times 16 db 0x22
-    times 16 db 0xF7
-    times 16 db 0x69
-    times 16 db 0x90
-    times 16 db 0x7E
-    times 16 db 0x3E
-    times 16 db 0xE8
-    times 16 db 0x5E
-    times 16 db 0xA6
-    times 16 db 0x62
-    times 16 db 0xB9
-    times 16 db 0x0D
-    times 16 db 0x77
-    times 16 db 0x7D
     times 16 db 0x58
-    times 16 db 0xF6
-    times 16 db 0x5F
-    times 16 db 0x71
     times 16 db 0xB3
-    times 16 db 0x3F
-    times 16 db 0x43
-    times 16 db 0x2B
+    times 16 db 0x40
+    times 16 db 0x86
+    times 16 db 0xAC
+    times 16 db 0x1D
+    times 16 db 0xF7
+    times 16 db 0x30
+    times 16 db 0x37
+    times 16 db 0x6B
+    times 16 db 0xE4
+    times 16 db 0x88
+    times 16 db 0xD9
+    times 16 db 0xE7
+    times 16 db 0x89
     times 16 db 0xE1
-    times 16 db 0xB4
-    times 16 db 0x27
-    times 16 db 0x1A
-    times 16 db 0x0B
-    times 16 db 0x38
-    times 16 db 0xE5
     times 16 db 0x1B
-    times 16 db 0xA3
-    times 16 db 0x6D
-    times 16 db 0x33
-    times 16 db 0x28
-    times 16 db 0xC2
-    times 16 db 0x53
-    times 16 db 0x04
-    times 16 db 0x24
-    times 16 db 0x25
-    times 16 db 0x8C
-    times 16 db 0x55
-    times 16 db 0x20
-    times 16 db 0x9A
-    times 16 db 0xAF
-    times 16 db 0x61
-    times 16 db 0x2F
-    times 16 db 0x1C
-    times 16 db 0x52
-    times 16 db 0x4D
-    times 16 db 0x15
-    times 16 db 0x97
-    times 16 db 0x09
-    times 16 db 0x3A
-    times 16 db 0xA7
-    times 16 db 0x60
-    times 16 db 0x7A
-    times 16 db 0xC9
-    times 16 db 0x2E
-    times 16 db 0xE9
-    times 16 db 0x39
-    times 16 db 0x3E
-    times 16 db 0x37
-    times 16 db 0x6F
-    times 16 db 0x2C
-    times 16 db 0xA4
-    times 16 db 0x5E
-    times 16 db 0x0A
-    times 16 db 0x37
+    times 16 db 0x83
+    times 16 db 0x49
+    times 16 db 0x4C
+    times 16 db 0x3F
+    times 16 db 0xF8
     times 16 db 0xFE
-    times 16 db 0xBC
+    times 16 db 0x8D
+    times 16 db 0x53
+    times 16 db 0xAA
+    times 16 db 0x90
+    times 16 db 0xCA
+    times 16 db 0xD8
+    times 16 db 0x85
+    times 16 db 0x61
+    times 16 db 0x20
+    times 16 db 0x71
+    times 16 db 0x67
+    times 16 db 0xA4
+    times 16 db 0x2D
+    times 16 db 0x2B
+    times 16 db 0x09
+    times 16 db 0x5B
+    times 16 db 0xCB
+    times 16 db 0x9B
+    times 16 db 0x25
+    times 16 db 0xD0
+    times 16 db 0xBE
+    times 16 db 0xE5
+    times 16 db 0x6C
+    times 16 db 0x52
+    times 16 db 0x59
+    times 16 db 0xA6
+    times 16 db 0x74
+    times 16 db 0xD2
+    times 16 db 0xE6
+    times 16 db 0xF4
+    times 16 db 0xB4
+    times 16 db 0xC0
+    times 16 db 0xD1
+    times 16 db 0x66
+    times 16 db 0xAF
+    times 16 db 0xC2
+    times 16 db 0x39
+    times 16 db 0x4B
+    times 16 db 0x63
+    times 16 db 0xB6
 
 ; ===== Таблица обратного S-бокса (256 байт) =====
 InvS_box_table:
@@ -372,160 +376,159 @@ InvS_box_table:
     times 16 db 0xE2
     times 16 db 0x4A
     times 16 db 0xBC
-    times 16 db 0xB9
-    times 16 db 0x50
-    times 16 db 0x78
-    times 16 db 0xCA
-    times 16 db 0x5C
-    times 16 db 0x0A
-    times 16 db 0x84
-    times 16 db 0x11
-    times 16 db 0x33
-    times 16 db 0x66
-    times 16 db 0xDD
-    times 16 db 0x8C
-    times 16 db 0x1D
-    times 16 db 0x97
-    times 16 db 0xCD
-    times 16 db 0x5D
-    times 16 db 0xDE
-    times 16 db 0x58
-    times 16 db 0x17
-    times 16 db 0x7B
-    times 16 db 0x7C
-    times 16 db 0xD6
-    times 16 db 0x4E
-    times 16 db 0x88
-    times 16 db 0xE8
-    times 16 db 0x2C
-    times 16 db 0x65
-    times 16 db 0xEB
-    times 16 db 0x93
-    times 16 db 0xED
-    times 16 db 0xCF
-    times 16 db 0x99
-    times 16 db 0xE1
-    times 16 db 0xCE
-    times 16 db 0x7D
-    times 16 db 0x2E
-    times 16 db 0xAB
-    times 16 db 0x8B
-    times 16 db 0x1B
-    times 16 db 0x56
-    times 16 db 0x4F
-    times 16 db 0x9E
-    times 16 db 0x36
-    times 16 db 0x3E
-    times 16 db 0xBA
-    times 16 db 0x8E
-    times 16 db 0x15
-    times 16 db 0x6A
-    times 16 db 0x34
-    times 16 db 0x24
-    times 16 db 0x1A
-    times 16 db 0xA9
-    times 16 db 0x0D
-    times 16 db 0x4B
-    times 16 db 0xE9
-    times 16 db 0x08
-    times 16 db 0x87
-    times 16 db 0x14
-    times 16 db 0x3D
-    times 16 db 0xCB
-    times 16 db 0x02
-    times 16 db 0x3B
-    times 16 db 0xF4
-    times 16 db 0x6C
-    times 16 db 0x83
-    times 16 db 0xA0
-    times 16 db 0x69
-    times 16 db 0x01
-    times 16 db 0x6D
-    times 16 db 0xBF
-    times 16 db 0x5F
-    times 16 db 0x1F
-    times 16 db 0xF6
-    times 16 db 0xAD
-    times 16 db 0xDB
-    times 16 db 0x3A
-    times 16 db 0x47
-    times 16 db 0x71
-    times 16 db 0x16
-    times 16 db 0xEC
-    times 16 db 0xE3
-    times 16 db 0xC7
-    times 16 db 0x74
-    times 16 db 0x00
-    times 16 db 0x7A
-    times 16 db 0xCA
-    times 16 db 0x20
-    times 16 db 0xE0
-    times 16 db 0xED
-    times 16 db 0x45
-    times 16 db 0x6B
-    times 16 db 0x5A
-    times 16 db 0x6E
-    times 16 db 0x1B
-    times 16 db 0x4C
-    times 16 db 0x96
-    times 16 db 0x61
-    times 16 db 0x0E
-    times 16 db 0xFB
-    times 16 db 0xD0
-    times 16 db 0xBB
-    times 16 db 0xFB
-    times 16 db 0x51
-    times 16 db 0x92
-    times 16 db 0x59
-    times 16 db 0x09
-    times 16 db 0x94
-    times 16 db 0x67
-    times 16 db 0x80
-    times 16 db 0x28
-    times 16 db 0x4D
-    times 16 db 0x8A
-    times 16 db 0xD7
-    times 16 db 0xF1
-    times 16 db 0x7C
-    times 16 db 0x3C
-    times 16 db 0x81
-    times 16 db 0x44
-    times 16 db 0x95
-    times 16 db 0xB3
     times 16 db 0x35
-    times 16 db 0x6F
-    times 16 db 0xDA
-    times 16 db 0x1E
-    times 16 db 0xF5
-    times 16 db 0xCC
-    times 16 db 0x85
-    times 16 db 0x48
-    times 16 db 0x7E
-    times 16 db 0x0B
-    times 16 db 0x31
-    times 16 db 0x37
-    times 16 db 0x0C
-    times 16 db 0xAC
-    times 16 db 0x26
-    times 16 db 0x6D
-    times 16 db 0x8C
-    times 16 db 0xE4
-    times 16 db 0x89
-    times 16 db 0xD8
-    times 16 db 0xDC
-    times 16 db 0xB0
-    times 16 db 0x76
-    times 16 db 0x10
-    times 16 db 0x13
-    times 16 db 0x2B
+    times 16 db 0xCA
+    times 16 db 0xEE
+    times 16 db 0x78
+    times 16 db 0x05
+    times 16 db 0x6B
+    times 16 db 0x51
+    times 16 db 0xE1
+    times 16 db 0x59
+    times 16 db 0xA3
     times 16 db 0xF2
-    times 16 db 0x40
+    times 16 db 0x71
+    times 16 db 0x56
+    times 16 db 0x11
+    times 16 db 0x6A
+    times 16 db 0x89
+    times 16 db 0x94
+    times 16 db 0x65
+    times 16 db 0x8C
+    times 16 db 0xBB
+    times 16 db 0x77
+    times 16 db 0x3C
+    times 16 db 0x7B
+    times 16 db 0x28
+    times 16 db 0xAB
+    times 16 db 0xD2
+    times 16 db 0x31
+    times 16 db 0xDE
+    times 16 db 0xC4
+    times 16 db 0x5F
+    times 16 db 0xCC
+    times 16 db 0xCF
+    times 16 db 0x76
+    times 16 db 0x2C
+    times 16 db 0xB8
+    times 16 db 0xD8
+    times 16 db 0x2E
+    times 16 db 0x36
+    times 16 db 0xDB
+    times 16 db 0x69
+    times 16 db 0xB3
+    times 16 db 0x14
+    times 16 db 0x95
+    times 16 db 0xBE
+    times 16 db 0x62
+    times 16 db 0xA1
+    times 16 db 0x3B
+    times 16 db 0x16
+    times 16 db 0x66
+    times 16 db 0xE9
+    times 16 db 0x5C
+    times 16 db 0x6C
+    times 16 db 0x6D
+    times 16 db 0xAD
+    times 16 db 0x37
+    times 16 db 0x61
+    times 16 db 0x4B
+    times 16 db 0xB9
+    times 16 db 0xE3
+    times 16 db 0xBA
+    times 16 db 0xF1
+    times 16 db 0xA0
+    times 16 db 0x85
+    times 16 db 0x83
+    times 16 db 0xDA
+    times 16 db 0x47
+    times 16 db 0xC5
+    times 16 db 0xB0
+    times 16 db 0x33
+    times 16 db 0xFA
+    times 16 db 0x96
+    times 16 db 0x6F
+    times 16 db 0x6E
+    times 16 db 0xC2
+    times 16 db 0xF6
+    times 16 db 0x50
+    times 16 db 0xFF
+    times 16 db 0x5D
+    times 16 db 0xA9
+    times 16 db 0x8E
+    times 16 db 0x17
+    times 16 db 0x1B
+    times 16 db 0x97
+    times 16 db 0x7D
+    times 16 db 0xEC
+    times 16 db 0x58
     times 16 db 0xF7
+    times 16 db 0x1F
+    times 16 db 0xFB
+    times 16 db 0x7C
+    times 16 db 0x09
+    times 16 db 0x0D
+    times 16 db 0x7A
+    times 16 db 0x67
+    times 16 db 0x45
+    times 16 db 0x87
+    times 16 db 0xDC
+    times 16 db 0xE8
+    times 16 db 0x4F
+    times 16 db 0x1D
+    times 16 db 0x4E
+    times 16 db 0x04
+    times 16 db 0xEB
+    times 16 db 0xF8
+    times 16 db 0xF3
+    times 16 db 0x3E
+    times 16 db 0x3D
+    times 16 db 0xBD
+    times 16 db 0x8A
+    times 16 db 0x88
+    times 16 db 0xDD
+    times 16 db 0xCD
+    times 16 db 0x0B
+    times 16 db 0x13
     times 16 db 0x98
+    times 16 db 0x02
+    times 16 db 0x93
+    times 16 db 0x80
+    times 16 db 0x90
+    times 16 db 0xD0
+    times 16 db 0x24
+    times 16 db 0x34
+    times 16 db 0xCB
+    times 16 db 0xED
+    times 16 db 0xF4
+    times 16 db 0xCE
+    times 16 db 0x99
+    times 16 db 0x10
+    times 16 db 0x44
+    times 16 db 0x40
+    times 16 db 0x92
+    times 16 db 0x3A
+    times 16 db 0x01
+    times 16 db 0x26
+    times 16 db 0x12
+    times 16 db 0x1A
+    times 16 db 0x48
+    times 16 db 0x68
+    times 16 db 0xF5
+    times 16 db 0x81
+    times 16 db 0x8B
+    times 16 db 0xC7
+    times 16 db 0xD6
+    times 16 db 0x20
+    times 16 db 0x0A
+    times 16 db 0x08
+    times 16 db 0x00
+    times 16 db 0x4C
+    times 16 db 0xD7
+    times 16 db 0x74
 
 ; ===== Таблица для линейного преобразования L (256 байт) =====
-; ВНИМАНИЕ: эта таблица также организована с повторениями, но используется
-; в _l_transform_byte как 16-байтовая – это тоже ошибка, но оставлено как есть.
+; ВНИМАНИЕ: таблица организована с повторениями для vpshufb
 L_table:
     db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     db 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA, 0xFA
@@ -979,423 +982,9 @@ InvL_table:
     db 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F, 0x618F
     db 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175, 0x6175
 
-; ===== Вектор для линейного преобразования (используется в _l_transform_byte) =====
+; ===== Вектор для линейного преобразования =====
 L_VEC: db 0x94, 0x20, 0x85, 0x10, 0xC2, 0xC0, 0x01, 0xFB, 0x01, 0xC0, 0xC2, 0x10, 0x85, 0x20, 0x94, 0x01
 
 ; ===== Раундовые константы (32 байта) =====
 round_constants:
     db 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20
-
-section .text
-global kuznyechik_set_key
-global kuznyechik_encrypt_block
-global kuznyechik_decrypt_block
-global kuznyechik_encrypt_ctr
-global kuznyechik_encrypt_ecb
-global kuznyechik_S_avx2
-global kuznyechik_L_avx2
-global kuznyechik_inv_S_avx2
-global kuznyechik_L_inv_avx2
-global kuznyechik_precompute_tables
-
-; ----------------------------------------------
-;  Вспомогательная функция: l_transform_byte
-;  Вход: rdi = указатель на 16‑байтовый блок,
-;        r8  = указатель на L_table (или InvL_table)
-;  Выход: eax = байт результата
-;  Примечание: использует vpshufb, который берёт только младшие 4 бита,
-;              поэтому таблица должна быть 16‑байтовой, но на самом деле
-;              здесь таблица 256 байт с повторениями – это ошибка,
-;              оставлено как есть.
-; ----------------------------------------------
-_l_transform_byte:
-    movdqu xmm0, [rdi]
-    vpshufb xmm0, xmm0, [r8]
-    movd eax, xmm0
-    mov esi, eax
-    shr eax, 16
-    xor esi, eax
-    shr eax, 16
-    xor esi, eax
-    shr eax, 16
-    xor esi, eax
-    mov eax, esi
-    ret
-
-; ----------------------------------------------
-;  R_transform: циклический сдвиг вправо на 1 байт + L
-;  Вход: rdi = указатель на блок (16 байт),
-;        r8  = указатель на L_table
-;  Выход: блок изменяется
-; ----------------------------------------------
-R_transform:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 40
-
-    movdqu xmm0, [rdi]               ; загружаем блок
-    movdqu [rsp+8], xmm0             ; сохраняем копию
-
-    ; Вычисляем l_transform_byte от копии
-    lea rdi, [rsp+8]
-    call _l_transform_byte           ; результат в eax
-
-    ; Циклический сдвиг вправо на 1 байт
-    ; Копируем блок на стек, сдвигаем и записываем обратно
-    movdqu xmm1, [rsp+8]             ; xmm1 = блок
-    vpalignr xmm1, xmm1, xmm1, 1     ; сдвиг вправо на 1 байт
-    movdqu [rsp+8], xmm1             ; сохраняем сдвинутый блок
-
-    ; Устанавливаем первый байт равным al (результат _l_transform_byte)
-    mov [rsp+8], al                  ; заменяем байт по смещению 0
-
-    movdqu xmm0, [rsp+8]             ; загружаем готовый блок
-    movdqu [rdi], xmm0               ; сохраняем в исходный буфер
-
-    add rsp, 40
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  R_inv_transform: циклический сдвиг влево на 1 байт + L
-;  Вход: rdi = указатель на блок (16 байт),
-;        r8  = указатель на InvL_table
-;  Выход: блок изменяется
-; ----------------------------------------------
-R_inv_transform:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 40
-
-    movdqu xmm0, [rdi]
-    movdqu [rsp+8], xmm0
-
-    ; Циклический сдвиг влево на 1 байт (vpalignr со сдвигом 15)
-    movdqu xmm1, [rsp+8]
-    vpalignr xmm1, xmm1, xmm1, 15    ; сдвиг влево на 1 байт
-    movdqu [rsp+8], xmm1
-
-    ; Запоминаем последний байт исходного блока (будет вставлен в конец)
-    mov al, [rsp+8]                  ; берём байт с позиции 0 (после сдвига это старый последний)
-    ; На самом деле нужно взять байт перед сдвигом, но проще сделать по-другому:
-    ; мы уже сдвинули, поэтому сохраним al для вставки в конец.
-
-    ; Вычисляем l_transform_byte от исходного блока (до сдвига)
-    ; Но нам нужен L от исходного блока, а не от сдвинутого.
-    ; Поэтому перезагрузим исходный блок и вызовем _l_transform_byte.
-    movdqu xmm0, [rdi]               ; исходный блок
-    movdqu [rsp+16], xmm0
-    lea rdi, [rsp+16]
-    call _l_transform_byte           ; результат в eax
-
-    ; Теперь у нас есть сдвинутый блок в [rsp+8] и al – результат L.
-    ; Вставляем al в последний байт сдвинутого блока.
-    mov [rsp+8+15], al
-
-    movdqu xmm0, [rsp+8]
-    movdqu [rdi], xmm0
-
-    add rsp, 40
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  L_transform: 16 итераций R_transform
-;  Вход: rdi = блок (in/out), r8 = L_table
-; ----------------------------------------------
-kuznyechik_L_avx2:
-    push rbp
-    mov rbp, rsp
-    mov r10, rdi
-    mov ecx, 16
-.L_loop:
-    mov rdi, r10
-    call R_transform
-    dec ecx
-    jnz .L_loop
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  L_inv_transform: 16 итераций R_inv_transform
-;  Вход: rdi = блок (in/out), r8 = InvL_table
-; ----------------------------------------------
-kuznyechik_L_inv_avx2:
-    push rbp
-    mov rbp, rsp
-    mov r10, rdi
-    mov ecx, 16
-.L_inv_loop:
-    mov rdi, r10
-    call R_inv_transform
-    dec ecx
-    jnz .L_inv_loop
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  kuznyechik_set_key
-;  Вход: rdi = указатель на 32‑байтный ключ
-;        rsi = указатель на массив из 10 раундовых ключей (160 байт)
-; ----------------------------------------------
-kuznyechik_set_key:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-
-    ; K0 и K1
-    movdqu xmm0, [rdi]
-    movdqu xmm1, [rdi+16]
-    movdqu [rsp+16], xmm0
-    movdqu [rsp+32], xmm1
-
-    ; Сохраняем начальные ключи
-    movdqu [rsi], xmm0
-    movdqu [rsi+16], xmm1
-    add rsi, 32                     ; теперь rsi указывает на место для K2
-
-    mov r10d, 0                      ; g = 0..3
-.key_groups:
-    cmp r10d, 4
-    jge .key_done
-
-    mov ecx, 1                       ; j = 1..8
-.key_rounds:
-    cmp ecx, 9
-    jge .key_store
-
-    ; round_num = g*8 + (j-1)
-    mov r11d, r10d
-    imul r11d, 8
-    lea r11d, [r11d + ecx - 1]       ; round_num = g*8 + j - 1
-
-    ; Загружаем раундовую константу C
-    lea rbx, [rel round_constants]
-    lea rax, [rbx+r11]
-    movzx eax, byte [rax]
-
-    ; Подготовка C в xmm2 (0x00..00 C 00..00)
-    xorps xmm2, xmm2
-    movd xmm2, eax
-
-    ; F_round: tmp = S(K0 ^ C)
-    movdqu xmm3, [rsp+16]
-    pxor xmm3, xmm2
-    lea rdx, [rel S_box_table]
-    vpshufb xmm3, xmm3, [rdx]       ; S-подстановка (неверная, но оставлена)
-
-    ; L(tmp)
-    movdqu [rsp+48], xmm3
-    lea rdi, [rsp+48]
-    lea r8, [rel L_table]            ; инициализируем r8
-    call kuznyechik_L_avx2
-
-    ; tmp ^= K1
-    movdqu xmm4, [rsp+48]
-    pxor xmm4, [rsp+32]
-
-    ; swap K0 и K1
-    movdqu xmm3, [rsp+32]
-    movdqu [rsp+16], xmm3
-    movdqu [rsp+32], xmm4
-
-    inc ecx
-    jmp .key_rounds
-
-.key_store:
-    ; Сохраняем текущие K0, K1 как раундовые ключи
-    movdqu xmm0, [rsp+16]
-    movdqu xmm1, [rsp+32]
-    movdqu [rsi], xmm0
-    movdqu [rsi+16], xmm1
-    add rsi, 32
-
-    inc r10d
-    jmp .key_groups
-
-.key_done:
-    add rsp, 64
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  kuznyechik_encrypt_block
-;  Вход: rdi = указатель на блок (in/out)
-;        rsi = указатель на expanded_key (160 байт)
-; ----------------------------------------------
-kuznyechik_encrypt_block:
-    push rbp
-    mov rbp, rsp
-
-    mov r10, rdi
-    mov r11, rsi                     ; r11 = указатель на текущий раундовый ключ
-    mov ecx, 9                       ; 9 полных раундов
-
-.enc_loop:
-    ; XOR с ключом
-    movdqu xmm0, [r10]
-    movdqu xmm1, [r11]
-    pxor xmm0, xmm1
-
-    ; S-подстановка
-    lea rdx, [rel S_box_table]
-    vpshufb xmm0, xmm0, [rdx]
-
-    ; L-преобразование
-    movdqu [r10], xmm0
-    mov rdi, r10
-    lea r8, [rel L_table]
-    call kuznyechik_L_avx2
-
-    add r11, 16
-    dec ecx
-    jnz .enc_loop
-
-    ; Последний XOR (раунд 10)
-    movdqu xmm0, [r10]
-    movdqu xmm1, [r11]
-    pxor xmm0, xmm1
-    movdqu [r10], xmm0
-
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  kuznyechik_decrypt_block
-;  Вход: rdi = указатель на блок (in/out)
-;        rsi = указатель на expanded_key (160 байт)
-; ----------------------------------------------
-kuznyechik_decrypt_block:
-    push rbp
-    mov rbp, rsp
-
-    mov r10, rdi
-    mov r11, rsi
-    add r11, 144                    ; начинаем с K10 (последнего)
-    mov ecx, 9
-
-.dec_loop:
-    ; XOR с ключом
-    movdqu xmm0, [r10]
-    movdqu xmm1, [r11]
-    pxor xmm0, xmm1
-    movdqu [r10], xmm0
-
-    ; Обратное L
-    mov rdi, r10
-    lea r8, [rel InvL_table]
-    call kuznyechik_L_inv_avx2
-
-    ; Обратная S-подстановка
-    movdqu xmm0, [r10]
-    lea rdx, [rel InvS_box_table]
-    vpshufb xmm0, xmm0, [rdx]
-    movdqu [r10], xmm0
-
-    sub r11, 16
-    dec ecx
-    jnz .dec_loop
-
-    ; Последний XOR с K1
-    mov r11, rsi
-    movdqu xmm0, [r10]
-    movdqu xmm1, [r11]
-    pxor xmm0, xmm1
-    movdqu [r10], xmm0
-
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  kuznyechik_encrypt_ecb
-;  Вход: rdi = in, rsi = out, rdx = len, rcx = expanded_key
-; ----------------------------------------------
-kuznyechik_encrypt_ecb:
-    push rbp
-    mov rbp, rsp
-
-    mov r10, rdi
-    mov r11, rsi
-    mov r12, rdx
-    mov r13, 0
-    mov r14, rcx
-
-.ecb_loop:
-    cmp r13, r12
-    jge .ecb_done
-
-    mov rdi, r10
-    mov rsi, r14
-    call kuznyechik_encrypt_block
-
-    add r10, 16
-    add r11, 16
-    add r13, 16
-    jmp .ecb_loop
-
-.ecb_done:
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  kuznyechik_encrypt_ctr
-;  Вход: rdi = in, rsi = out, rdx = len,
-;        rcx = expanded_key (160 байт),
-;        r8  = nonce (16 байт, счётчик в младших 8 байтах)
-; ----------------------------------------------
-kuznyechik_encrypt_ctr:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-
-    mov r10, rdi                     ; in
-    mov r11, rsi                     ; out
-    mov r12, rdx                     ; len
-    mov r13, rcx                     ; expanded_key
-    mov r14, r8                      ; nonce
-
-    mov r15, 0                       ; processed
-
-    ; Копируем nonce на стек (для инкремента)
-    movdqu xmm0, [r14]
-    movdqu [rsp+16], xmm0
-
-.ctr_loop:
-    cmp r15, r12
-    jge .ctr_done
-
-    ; Инкрементируем счётчик (маленький endian, младшие 8 байт)
-    mov rax, [rsp+16]                ; берём младшие 8 байт nonce
-    add rax, 1
-    mov [rsp+16], rax
-
-    ; Шифруем блок счётчика
-    lea rdi, [rsp+16]
-    mov rsi, r13
-    call kuznyechik_encrypt_block
-
-    ; XOR с данными
-    movdqu xmm0, [r10]               ; данные
-    movdqu xmm1, [rsp+16]            ; зашифрованный счётчик
-    pxor xmm0, xmm1
-    movdqu [r11], xmm0               ; сохраняем результат
-
-    add r10, 16
-    add r11, 16
-    add r15, 16
-    jmp .ctr_loop
-
-.ctr_done:
-    add rsp, 64
-    pop rbp
-    ret
-
-; ----------------------------------------------
-;  Заглушки для неиспользуемых функций
-; ----------------------------------------------
-kuznyechik_S_avx2:
-    ret
-kuznyechik_inv_S_avx2:
-    ret
-kuznyechik_precompute_tables:
-    ret
