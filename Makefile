@@ -1,18 +1,19 @@
 CC = gcc
 NASM = nasm
-CFLAGS = -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -I /tmp/msquic-full/src/inc
-LDFLAGS = -lpthread -lmsquic
+CFLAGS = -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network
+LDFLAGS = -lpthread
 NASMFLAGS = -f elf64
 
 SRC_DIR = src
 BUILD_DIR = build
 
 CRYPTO_SRC = $(SRC_DIR)/crypto/gost_cipher.c
-CRYPTO_ASM = $(SRC_DIR)/crypto/kuznyechik.asm
+# src/crypto/kuznyechik.asm намеренно исключён из сборки: реализация не проходит
+# контрольные векторы RFC 7801 и аварийно завершается (см. AUDIT_REPORT.md §3).
+# Шифрование обеспечивает C-реализация в gost_cipher.c.
 CORE_SRC = $(SRC_DIR)/core/server.c $(SRC_DIR)/core/client.c $(SRC_DIR)/core/session.c $(SRC_DIR)/core/proxy.c
 
 CRYPTO_OBJ = $(BUILD_DIR)/gost_cipher.o
-KUZ_OBJ = $(BUILD_DIR)/kuznyechik.o
 CONFIG_OBJ = $(BUILD_DIR)/config.o
 LOG_OBJ = $(BUILD_DIR)/log.o
 SOCKS5_OBJ = $(BUILD_DIR)/socks5.o
@@ -31,9 +32,6 @@ $(BUILD_DIR):
 
 $(BUILD_DIR)/gost_cipher.o: $(CRYPTO_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/kuznyechik.o: $(CRYPTO_ASM) | $(BUILD_DIR)
-	$(NASM) $(NASMFLAGS) $< -o $@
 
 $(BUILD_DIR)/server.o: $(SRC_DIR)/core/server.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -61,20 +59,21 @@ $(BUILD_DIR)/quic_layer.o: $(SRC_DIR)/network/quic_layer.c | $(BUILD_DIR)
 
 $(BUILD_DIR)/tcp_helpers.o: $(SRC_DIR)/core/tcp_helpers.asm | $(BUILD_DIR)
 	$(NASM) $(NASMFLAGS) $< -o $@
-$(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(KUZ_OBJ) $(SERVER_OBJ)
-	$(CC) $^ -o $@ $(LDFLAGS) -no-pie
 
-$(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(KUZ_OBJ) $(CLIENT_OBJ) $(QUIC_LAYER_OBJ)
-	$(CC) $^ -o $@ $(LDFLAGS) -no-pie
+$(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(SERVER_OBJ)
+	$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/gost-proxy: $(CRYPTO_OBJ) $(KUZ_OBJ) $(PROXY_OBJ)
+$(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CLIENT_OBJ)
+	$(CC) $^ -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/gost-proxy: $(CRYPTO_OBJ) $(PROXY_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 test: $(BUILD_DIR)/gost-test
 	./$(BUILD_DIR)/gost-test
 
 $(BUILD_DIR)/gost-test: $(CRYPTO_OBJ) $(BUILD_DIR)/gost_test.o | $(BUILD_DIR)
-	$(CC) $^ -o $@
+	$(CC) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/gost_test.o: $(SRC_DIR)/crypto/gost_test.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@

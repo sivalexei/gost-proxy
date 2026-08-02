@@ -1,18 +1,18 @@
 /*
- * ГОСТ Р 34.12-2015 (Кузнечик) — AVX2-оптимизация
- * Block size: 128 bits, Key size: 256 bits, 10 rounds.
- * Based on RFC 7801.
+ * ГОСТ Р 34.12-2015 (Кузнечик) — эталонная реализация на C.
+ * Размер блока 128 бит, ключ 256 бит, 10 раундов.
+ * Соответствует RFC 7801, проверено на контрольных векторах §A.1
+ * (см. src/crypto/gost_test.c, цель `make test`).
+ *
+ * Ассемблерный вариант (src/crypto/kuznyechik.asm) из сборки исключён:
+ * он не проходит контрольные векторы и аварийно завершается.
+ * Подробности — в AUDIT_REPORT.md, раздел 3.
  */
 #include <string.h>
 #include <stdint.h>
 #include "kuznyechik.h"
 #include "gost_common.h"
 
-/* ===== AVX2 helper functions (from kuznyechik.asm) ===== */
-extern void kuznyechik_S_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
-extern void kuznyechik_L_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
-extern void kuznyechik_inv_S_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
-extern void kuznyechik_L_inv_avx2(const uint8_t *src, uint8_t *dst, const uint8_t *table);
 /* ===== S-box (π) and inverse S-box (π⁻¹) from RFC 7801 §4.1 ===== */
 static const uint8_t S[256] = {
     252,238,221, 17,207,110, 49, 22,251,196,250,218, 35,197,  4, 77,
@@ -62,51 +62,6 @@ static void S_inv_substitute(uint8_t *block) {
     for (int i = 0; i < 16; i++)
         block[i] = S_inv[block[i]];
 }
-
-/* ===== Precompute 4096-byte tables for AVX2 ===== */
-static uint8_t sbox_table_avx2[4096];
-static uint8_t inv_sbox_table_avx2[4096];
-static uint8_t L_table_avx2[4096];
-static uint8_t inv_L_table_avx2[4096];
-
-static void precompute_avx2_tables(void) __attribute__((constructor));
-
-static uint8_t l_transform(const uint8_t *block);
-static uint8_t gf_mul(uint8_t a, uint8_t b);
-
-static uint8_t gf_pow(uint8_t a, int n) {
-    if (n == 0) return 1;
-    uint8_t r = 1;
-    for (int i = 0; i < n; i++)
-        r = gf_mul(r, a);
-    return r;
-}
-
-static uint8_t l_transform_byte(uint8_t b) {
-    uint8_t block[16];
-    memset(block, 0, 16);
-    block[0] = b;
-    return l_transform(block);
-}
-
-void kuznyechik_precompute_tables(uint8_t *sbox_tbl, uint8_t *inv_sbox_tbl,
-                                   uint8_t *L_tbl, uint8_t *inv_L_tbl) {
-    for (int v = 0; v < 256; v++) {
-        for (int i = 0; i < 16; i++) {
-            uint8_t p = gf_pow((uint8_t)v, i);
-            sbox_tbl[v * 16 + i] = S[p];
-            inv_sbox_tbl[v * 16 + i] = S_inv[p];
-            L_tbl[v * 16 + i] = l_transform_byte(p);
-            inv_L_tbl[v * 16 + i] = l_transform_byte(p);
-        }
-    }
-}
-
-static void precompute_avx2_tables(void) {
-    kuznyechik_precompute_tables(sbox_table_avx2, inv_sbox_table_avx2,
-                                  L_table_avx2, inv_L_table_avx2);
-}
-
 /* ===== GF(2^8) arithmetic: p(x) = x^8+x^7+x^6+x+1 (0xC3) ===== */
 
 static uint8_t gf_mul(uint8_t a, uint8_t b) {
@@ -225,49 +180,51 @@ static void decrypt_block_c(uint8_t *block, const uint8_t *expanded) {
         block[i] ^= expanded[i];
 }
 
-/* ===== Public API ===== */
+/* ===== Публичный API (объявлен в kuznyechik.h) ===== */
 
-/* Все публичные функции определены в kuznyechik.asm (AVX2-оптимизация)
- * Эти C-функции — fallback-реализации, не экспортируются */
-static void kuznyechik_set_key_c(const uint8_t *key, uint8_t *expanded_key) {
+void kuznyechik_set_key(const uint8_t *key, uint8_t *expanded_key) {
     key_schedule(key, expanded_key);
 }
 
-static void kuznyechik_encrypt_block_c(uint8_t *block, const uint8_t *expanded_key) {
+void kuznyechik_encrypt_block(uint8_t *block, const uint8_t *expanded_key) {
     encrypt_block_c(block, expanded_key);
 }
 
-static void kuznyechik_decrypt_block_c(uint8_t *block, const uint8_t *expanded_key) {
+void kuznyechik_decrypt_block(uint8_t *block, const uint8_t *expanded_key) {
     decrypt_block_c(block, expanded_key);
 }
 
-static void kuznyechik_encrypt_ctr_c(
+/* CTR: гамма = E(counter), счётчик инкрементируется как 128-битное
+ * число big-endian. Хвост короче 16 байт обрабатывается корректно. */
+void kuznyechik_encrypt_ctr(
     const uint8_t *in, uint8_t *out, size_t len,
     const uint8_t *expanded_key, const uint8_t *nonce
 ) {
-    uint8_t counter[16], keystream[16];
-    memcpy(counter, nonce, 16);
+    uint8_t counter[KUZNYECHIK_BLOCK_SIZE], keystream[KUZNYECHIK_BLOCK_SIZE];
+    memcpy(counter, nonce, KUZNYECHIK_BLOCK_SIZE);
 
-    for (size_t offset = 0; offset < len; offset += 16) {
-        memcpy(keystream, counter, 16);
+    for (size_t offset = 0; offset < len; offset += KUZNYECHIK_BLOCK_SIZE) {
+        memcpy(keystream, counter, KUZNYECHIK_BLOCK_SIZE);
         encrypt_block_c(keystream, expanded_key);
 
-        size_t block_len = (len - offset > 16) ? 16 : (len - offset);
+        size_t block_len = len - offset;
+        if (block_len > KUZNYECHIK_BLOCK_SIZE) block_len = KUZNYECHIK_BLOCK_SIZE;
         for (size_t i = 0; i < block_len; i++)
             out[offset + i] = in[offset + i] ^ keystream[i];
 
-        for (int j = 15; j >= 0; j--) {
+        for (int j = KUZNYECHIK_BLOCK_SIZE - 1; j >= 0; j--)
             if (++counter[j] != 0) break;
-        }
     }
 }
 
-static void kuznyechik_encrypt_ecb_c(
+/* ECB: len должна быть кратна размеру блока, хвост игнорируется. */
+void kuznyechik_encrypt_ecb(
     const uint8_t *in, uint8_t *out, size_t len,
     const uint8_t *expanded_key
 ) {
-    for (size_t offset = 0; offset < len; offset += 16) {
-        memcpy(out + offset, in + offset, 16);
+    for (size_t offset = 0; offset + KUZNYECHIK_BLOCK_SIZE <= len;
+         offset += KUZNYECHIK_BLOCK_SIZE) {
+        memcpy(out + offset, in + offset, KUZNYECHIK_BLOCK_SIZE);
         encrypt_block_c(out + offset, expanded_key);
     }
 }

@@ -6,6 +6,10 @@
 
 /* Тестовые векторы из RFC 7801 (ГОСТ Р 34.12-2015) */
 
+/* Счётчик провалов: main возвращает 1, если хоть один тест не прошёл,
+ * чтобы `make test` и %check в RPM реально падали при неверном шифре. */
+static int failures = 0;
+
 static void test_key_expansion(void) {
     printf("Тест 1: Расширение ключа (RFC 7801 §5.4)... ");
 
@@ -63,6 +67,7 @@ static void test_key_expansion(void) {
     }
 
     if (ok) printf("ПРОЙДЕН\n");
+    else failures++;
 }
 
 static void test_encrypt_block(void) {
@@ -92,6 +97,7 @@ static void test_encrypt_block(void) {
     if (memcmp(block, expected, 16) == 0) {
         printf("ПРОЙДЕН\n");
     } else {
+        failures++;
         printf("ПРОВАЛЕН\n");
         printf("  Ожидалось: ");
         for (int i = 0; i < 16; i++) printf("%02X ", expected[i]);
@@ -128,6 +134,7 @@ static void test_decrypt_block(void) {
     if (memcmp(ciphertext, expected, 16) == 0) {
         printf("ПРОЙДЕН\n");
     } else {
+        failures++;
         printf("ПРОВАЛЕН\n");
         printf("  Ожидалось: ");
         for (int i = 0; i < 16; i++) printf("%02X ", expected[i]);
@@ -163,6 +170,7 @@ static void test_ctr_mode(void) {
     if (memcmp(plaintext, decrypted, 27) == 0) {
         printf("ПРОЙДЕН\n");
     } else {
+        failures++;
         printf("ПРОВАЛЕН\n");
         printf("  Ожидалось: %.27s\n", plaintext);
         printf("  Получено:  %.27s\n", decrypted);
@@ -194,6 +202,7 @@ static void test_roundtrip(void) {
     if (memcmp(block, original, 16) == 0) {
         printf("ПРОЙДЕН\n");
     } else {
+        failures++;
         printf("ПРОВАЛЕН\n");
         printf("  Ожидалось: ");
         for (int i = 0; i < 16; i++) printf("%02X ", original[i]);
@@ -212,6 +221,10 @@ int main(void) {
     test_ctr_mode();
     test_roundtrip();
 
-    printf("\n=== Все тесты завершены ===\n");
-    return 0;
+    if (failures == 0) {
+        printf("\n=== Все тесты пройдены ===\n");
+        return 0;
+    }
+    printf("\n=== ПРОВАЛЕНО ТЕСТОВ: %d ===\n", failures);
+    return 1;
 }

@@ -1,6 +1,6 @@
 %define app_name    gost-proxy
 %define version     1.0.0
-%define release     1%{?dist}
+%define release     2%{?dist}
 %define arch        x86_64
 
 Name:           %{app_name}
@@ -14,11 +14,13 @@ Source0:        %{app_name}-%{version}.tar.gz
 
 BuildRequires:  gcc
 BuildRequires:  make
+# nasm нужен для src/core/tcp_helpers.asm
+BuildRequires:  nasm
 
 %description
 Прокси-сервер и клиент с шифрованием ГОСТ Р 34.12-2015 "Кузнечик".
-Ядро шифрования реализовано на ассемблере x86-64 (NASM) для максимальной
-производительности. Транспорт — UDP (аналог Hysteria2).
+Шифрование — C-реализация по RFC 7801, проверенная на контрольных
+векторах §A.1. Транспорт — UDP.
 
 # ─── Пакет клиента ───
 %package client
@@ -47,6 +49,11 @@ Requires:       glibc
 # ─── Build ───
 %build
 make
+
+# ─── Check ───
+# Контрольные векторы RFC 7801 §A.1 — сборка падает, если шифр неверен
+%check
+make test
 
 # ─── Install ───
 %install
@@ -145,6 +152,16 @@ chmod 755 /var/log/gost-proxy
 
 # ─── Changelog ───
 %changelog
+* Sat Aug 01 2026 Developer <dev@example.com> - 1.0.0-2
+- Исправлена сборка: устранено дублирование символа kuznyechik_precompute_tables
+- Ассемблерная реализация Кузнечика исключена из сборки (не проходила
+  контрольные векторы RFC 7801, приводила к зависанию/SIGSEGV при старте)
+- Восстановлена корректная таблица S-box, шифрование переведено на
+  проверенную C-реализацию (RFC 7801 §A.1)
+- Убраны зависимости от /tmp/msquic-full и -lmsquic (не использовались)
+- Добавлен BuildRequires: nasm и секция %%check с контрольными векторами
+- Бинарники собираются как PIE (снят -no-pie)
+
 * Thu Jul 24 2025 Developer <dev@example.com> - 1.0.0-1
 - Initial RPM release
 - ГОСТ Р 34.12-2015 (Кузнечик) на NASM x86-64

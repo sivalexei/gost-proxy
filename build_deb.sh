@@ -3,7 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="gost-proxy"
-VERSION="1.0.0"
+VERSION="1.0.0-2"
 
 export PATH="/tmp/nasm_extract/usr/bin:$PATH"
 
@@ -42,6 +42,13 @@ if [ ! -f build/gost-server ] || [ ! -f build/gost-client ]; then
 fi
 
 echo "  Бинарники собраны"
+
+# Контрольные векторы RFC 7801 — не пакуем заведомо неверный шифр
+echo "  Проверка шифра на контрольных векторах RFC 7801..."
+if ! make test; then
+    echo "  ОШИБКА: крипто-тесты не пройдены, сборка пакетов прервана!"
+    exit 1
+fi
 
 # Формируем структуру пакетов
 echo "[3/4] Формирование пакетов..."

@@ -29,7 +29,10 @@ static volatile int running = 1;
 static uint8_t expanded_key[160];
 static uint8_t nonce[NONCE_SIZE];
 static uint64_t session_id = 0;
-static _Atomic uint32_t server_counter = 0;
+/* Не _Atomic: указатель на счётчик передаётся в protocol_pack_data/unpack_data,
+ * которые ожидают обычный uint32_t* и всё равно работают с ним неатомарно.
+ * С _Atomic это несовместимость типов указателей — ошибка сборки на GCC 14+. */
+static uint32_t server_counter = 0;
 static int udp_fd = -1;
 static struct sockaddr_in server_addr;
 static socklen_t server_addr_len;
