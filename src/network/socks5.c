@@ -4,6 +4,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -22,6 +23,9 @@
 #define SOCKS5_BUF_SIZE 4096
 #define DNS_CACHE_SIZE 256
 #define DNS_CACHE_TTL 300  /* секунд */
+#define MAX_SIMULTANEOUS_CONNS 64  /* backpressure: макс. одновременных соединений */
+
+static atomic_int active_conns = ATOMIC_VAR_INIT(0);
 
 typedef struct {
     char host[256];
@@ -161,10 +165,25 @@ static void* proxy_data_thread(void *arg) {
     }
 close_client:
     close(client_fd);
+    atomic_fetch_sub(&active_conns, 1);
     return NULL;
 }
 
 static void* socks5_client_thread(void *arg) {
+    /* Backpressure: ждём если нет свободных слотов */
+    int wait_count = 0;
+    while (atomic_load(&active_conns) >= MAX_SIMULTANEOUS_CONNS) {
+        if (wait_count++ > 100) {  /* 10 сек — таймаут */
+            int *p = (int *)arg;
+            int fd = *p;
+            free(p);
+            close(fd); log_warn("Backpressure: rejecting new client");
+            return NULL;
+        }
+        usleep(100000);  /* 100ms */
+    }
+    atomic_fetch_add(&active_conns, 1);
+
     int client_fd = *(int *)arg;
     free(arg);
     uint8_t buf[SOCKS5_BUF_SIZE];
@@ -202,6 +221,8 @@ static void* socks5_client_thread(void *arg) {
     uint32_t my_conn_id = __sync_fetch_and_add(&next_conn_id, 1);
     struct in_addr target_addr;
     memset(&target_addr, 0, sizeof(target_addr));
+
+    /* Resolve hostname */
     if (dns_cache_lookup(target_host, &target_addr) != 0) {
         struct hostent *he = gethostbyname(target_host);
         if (!he) {
@@ -213,6 +234,7 @@ static void* socks5_client_thread(void *arg) {
         target_addr = *(struct in_addr *)he->h_addr_list[0];
         dns_cache_store(target_host, &target_addr);
     }
+
     uint8_t connect_data[8];
     connect_data[0] = 0x01;
     connect_data[1] = 0x01;

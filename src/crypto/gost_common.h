@@ -21,6 +21,8 @@
 /* Типы пакетов */
 #define PKT_HANDSHAKE           0x01
 #define PKT_HANDSHAKE_ACK       0x01
+#define PKT_AUTH_REQ            0x05   /* Аутентификация клиента */
+#define PKT_AUTH_RESP           0x06   /* Ответ аутентификации */
 #define PKT_DATA                0x02
 #define PKT_KEEPALIVE   0x03
 #define PKT_DISCONNECT  0x04
@@ -70,6 +72,9 @@ typedef struct {
 #define FLD_CONN_ID 2
 #define FLD_SESS_ID 3
 
+/* Окно допустимых counter для защиты от replay-атак */
+#define COUNTER_WINDOW_SIZE 1024
+
 /* Клиентская сессия */
 typedef struct {
     uint64_t session_id;
@@ -77,6 +82,7 @@ typedef struct {
     uint8_t  expanded_key[160];
     uint8_t  nonce[NONCE_SIZE];
     uint32_t counter;
+    uint32_t last_counter;    /* последний принятый counter (для replay protection) */
     int      active;
     /* Динамические заголовки */
     uint8_t  header_seed[HEADER_SEED_SIZE];

@@ -14,6 +14,7 @@
 #include <poll.h>
 #include <netinet/tcp.h>
 #include <fcntl.h>
+#include <sys/random.h>
 
 #include "quic_layer.h"
 #include "kuznyechik.h"
@@ -22,6 +23,26 @@
 #include "config.h"
 #include "log.h"
 #include <ctype.h>
+
+/* Поддержка IPv4 и IPv6 */
+static int bind_to_addr(int fd, const char *addr, uint16_t port, int family) {
+    struct sockaddr_storage sa;
+    socklen_t slen = sizeof(sa);
+    memset(&sa, 0, slen);
+
+    if (family == AF_INET6 || (family == AF_UNSPEC && strchr(addr, ':'))) {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&sa;
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(port);
+        inet_pton(AF_INET6, addr, &sin6->sin6_addr);
+    } else {
+        struct sockaddr_in *sin4 = (struct sockaddr_in *)&sa;
+        sin4->sin_family = AF_INET;
+        sin4->sin_port = htons(port);
+        inet_pton(AF_INET, addr, &sin4->sin_addr);
+    }
+    return bind(fd, (struct sockaddr *)&sa, slen);
+}
 
 extern ssize_t tcp_write_all(int fd, const void *buf, size_t len);
 
@@ -198,12 +219,47 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
     pthread_mutex_lock(&sessions_lock);
     switch (pkt->type) {
         case PKT_HANDSHAKE: {
-            uint64_t session_id = ((uint64_t)rand() << 32) | rand();
+            /* Проверка HMAC-подписи handshake (аутентификация клиента) */
+            if (len < sizeof(gost_packet_t) - AUTH_TAG_SIZE + 4) {
+                log_debug("HANDSHAKE: too short for auth (%zu)", len); break;
+            }
+            const uint8_t *client_auth = data + sizeof(gost_packet_t) - AUTH_TAG_SIZE;
+            uint8_t expected_auth[4];
+            /* HMAC: первые 4 байта = session_id клиента, ключ = shared key */
+            const gost_packet_t *hs_pkt = (const gost_packet_t *)data;
+            uint64_t client_sid = ntohll(hs_pkt->session_id);
+            uint8_t hmac_data[8];
+            memcpy(hmac_data, &client_sid, 8);
+            /* Простой HMAC: шифруем session_id расширенным ключом */
+            uint8_t temp_block[16] = {0};
+            memcpy(temp_block, hmac_data, 8);
+            uint8_t temp_expanded[160];
+            memcpy(temp_expanded, expanded_key, 160);
+            kuznyechik_encrypt_block(temp_block, temp_expanded);
+            memcpy(expected_auth, temp_block, 4);
+
+            if (memcmp(client_auth, expected_auth, 4) != 0) {
+                log_warn("HANDSHAKE auth failed from %s", inet_ntoa(client_addr->sin_addr));
+                break;  /* аутентификация не пройдена — отклоняем */
+            }
+
+            /* Генерация session_id из /dev/urandom вместо rand() */
+            uint64_t session_id;
+            ssize_t rnd_ret = getrandom(&session_id, sizeof(session_id), 0);
+            if (rnd_ret < 0) {
+                int fd = open("/dev/urandom", O_RDONLY);
+                if (fd >= 0) {
+                    ssize_t rd = read(fd, &session_id, sizeof(session_id));
+                    close(fd);
+                    if (rd < (ssize_t)sizeof(session_id)) break;
+                } else { break; }
+            }
             gost_session_t *session = create_session(session_id);
             if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
             gost_packet_t response; protocol_create_handshake(&response, session_id, session->expanded_key);
             ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
-            log_debug("HANDSHAKE response sent=%zd, client=%s", sent, inet_ntoa(client_addr->sin_addr));
+            (void)sent;
+            log_debug("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(client_addr->sin_addr), (unsigned long long)session_id);
             break;
         }
         case PKT_DATA: {
@@ -267,6 +323,11 @@ int main(int argc, char *argv[]) {
     printf("Address: %s:%d\n", cfg.bind_addr, cfg.port);
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    /* Проверка: ключ должен быть задан явно (env или JSON) */
+    if (cfg.key[0] == '\0') {
+        fprintf(stderr, "[ERROR] Ключ не задан! Используйте GOST_PROXY_KEY или поле 'key' в JSON\n");
+        return 1;
+    }
     uint8_t server_key[32] = {0};
     for (int i = 0; i < 32 && cfg.key[i*2] && cfg.key[i*2+1]; i++) {
         unsigned int byte; sscanf(&cfg.key[i*2], "%2x", &byte); server_key[i] = (uint8_t)byte;
@@ -280,15 +341,15 @@ int main(int argc, char *argv[]) {
     memset(proxy_conns, 0, sizeof(proxy_conns));
     quic_server_t qs;
     memset(&qs, 0, sizeof(qs));
-    qs.server_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    /* Поддержка IPv6: определяем family из адреса */
+    int family = AF_INET;
+    if (strchr(cfg.bind_addr, ':')) family = AF_INET6;
+    else if (strcmp(cfg.bind_addr, "::") == 0) family = AF_INET6;
+
+    qs.server_fd = socket(family, SOCK_DGRAM, 0);
     if (qs.server_fd < 0) { perror("socket"); return 1; }
     int opt = 1; setsockopt(qs.server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    inet_pton(AF_INET, cfg.bind_addr, &server_addr.sin_addr);
-    server_addr.sin_port = htons(cfg.port);
-    if (bind(qs.server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind_to_addr(qs.server_fd, cfg.bind_addr, cfg.port, family) < 0) {
         perror("bind"); close(qs.server_fd); return 1;
     }
     printf("[SERVER] Listening on %s:%d...\n", cfg.bind_addr, cfg.port);
@@ -297,7 +358,13 @@ int main(int argc, char *argv[]) {
     pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs);
     while (running) sleep(1);
     log_info("Server exiting...");
+    /* Graceful shutdown: shutdown() пробуждает阻塞的 recvfrom */
+    shutdown(qs.server_fd, SHUT_RDWR);
     qs.active = 0; close(qs.server_fd);
+    /* Ждём завершения потока с таймаутом */
+    for (int i = 0; i < 10 && pthread_kill(thread, 0) == 0; i++) sleep(1);
     pthread_cancel(thread); pthread_join(thread, NULL);
+    /* Отключаем все сессии */
+    for (int i = 0; i < max_sessions; i++) sessions[i].active = 0;
     free(sessions); log_close(); return 0;
 }

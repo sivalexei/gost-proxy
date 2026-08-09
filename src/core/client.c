@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sys/random.h>
 
 #include "quic_layer.h"
 #include "kuznyechik.h"

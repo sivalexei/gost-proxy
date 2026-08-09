@@ -312,7 +312,16 @@ int protocol_unpack_data(
     uint8_t expected_mac[AUTH_TAG_SIZE];
     compute_mac(pkt->payload, MAX_PAYLOAD, expanded_key, expected_mac);
     if (memcmp(pkt->auth_tag, expected_mac, AUTH_TAG_SIZE) != 0) {
-        return -1;
+        return -1;  /* MAC mismatch — отбрасываем, counter НЕ обновляем */
+    }
+
+    /* Replay protection: counter должен быть больше last_counter - WINDOW_SIZE */
+    /* Защита от повторной доставки пакетов с тем же counter */
+    if (pkt_counter <= *counter && *counter - pkt_counter > COUNTER_WINDOW_SIZE) {
+        return -1;  /* packet too old — replay attack detected */
+    }
+    if (pkt_counter <= *counter) {
+        return -1;  /* duplicate packet (within window) */
     }
 
     /* Расшифровываем всё КРОМЕ первых 4 байт (counter) */
@@ -396,6 +405,27 @@ static void generate_fake_payload(uint8_t *payload, size_t len, const uint8_t *s
     for (size_t i = 0; i < len; i++) {
         payload[i] = (uint8_t)prng_next();
     }
+}
+
+/* ====== Replay protection ====== */
+
+/* Проверка counter в sliding window для защиты от replay-атак */
+int protocol_check_counter(uint32_t expected, uint32_t last)
+{
+    /* Упрощённое sliding window: counter должен быть больше last - WINDOW_SIZE
+     * и не больше last + небольшой запас */
+    const uint32_t window = COUNTER_WINDOW_SIZE;
+
+    /* Если counter меньше или равен — replay */
+    if (expected <= last) {
+        /* Допускаем откат в пределах окна (для мультиплексирования) */
+        if (last - expected > window) {
+            return -1; /* слишком старый counter */
+        }
+        /* Для мультиплексированных соединений это допустимо */
+        return 0;
+    }
+    return 1; /* ok, counter новый */
 }
 
 /* ============================================================
@@ -626,7 +656,8 @@ int protocol_make_cps_challenge(gost_packet_t *pkt, const uint8_t *seed, size_t 
     return 0;
 }
 
-/* Проверка CPS challenge — возвращает 0 если challenge верный */
+/* Проверка CPS challenge — возвращает 0 если challenge верный
+ * Ключ генерируется из session_id, а не жёстко задан */
 int protocol_verify_cps_challenge(const gost_packet_t *pkt, uint8_t *answer, size_t answer_len) {
     if (!pkt || !answer || answer_len < 32) return -1;
 
@@ -640,12 +671,22 @@ int protocol_verify_cps_challenge(const gost_packet_t *pkt, uint8_t *answer, siz
     if (sizeof(pkt->payload) < 64) return -1;
     memcpy(client_answer, pkt->payload + 32, 32);
 
-    /* Верифицируем answer */
+    /* Генерация CPS-ключа из session_id пакета (каждая сессия уникальна) */
     uint8_t expanded_key[160];
-    static uint8_t cps_key[32];
-    memset(cps_key, 0, sizeof(cps_key));
-    for (int i = 0; i < 32; i++) cps_key[i] = (uint8_t)(i * 0xAA);
-    kuznyechik_set_key(cps_key, expanded_key);
+    uint8_t cps_seed[32];
+    memset(cps_seed, 0, sizeof(cps_seed));
+
+    uint64_t sid = ntohll(pkt->session_id);
+    memcpy(cps_seed, &sid, 8);
+    /* Хэширование session_id в 32-байтовый CPS-ключ через шифрование */
+    uint8_t zero_block[16] = {0};
+    for (int i = 0; i < 4; i++) {
+        kuznyechik_set_key(cps_seed, expanded_key);
+        kuznyechik_encrypt_block(zero_block, expanded_key);
+        memcpy(cps_seed, zero_block, 16);
+    }
+
+    kuznyechik_set_key(cps_seed, expanded_key);
 
     /* Шифруем challenge тем же ключом */
     uint8_t expected_answer[32];

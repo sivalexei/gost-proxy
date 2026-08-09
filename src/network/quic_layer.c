@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/random.h>
 #include "quic_layer.h"
 #include "protocol.h"
 #include "gost_common.h"
@@ -32,30 +33,68 @@ static int create_udp_socket(void) {
 
 int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t server_port,
                         const uint8_t *key) {
-    (void)key;
     memset(qc, 0, sizeof(quic_client_t));
     qc->server_fd = create_udp_socket();
     if (qc->server_fd < 0) { log_error("QUIC: socket failed"); return -1; }
     strncpy(qc->server_addr, server_addr, QUIC_SERVER_ADDR_MAX-1);
     qc->server_port = server_port;
 
-    /* Handshake: отправляем PKT_HANDSHAKE, получаем ответ */
+    /* Handshake: отправляем PKT_HANDSHAKE с HMAC-аутентификацией */
     gost_packet_t hs_pkt;
     memset(&hs_pkt, 0, sizeof(hs_pkt));
     hs_pkt.magic = htonl(GOST_PROXY_MAGIC);
     hs_pkt.type = PKT_HANDSHAKE;
-    uint64_t sid = ((uint64_t)rand() << 32) | (uint64_t)rand();
+
+    /* Генерация session_id из /dev/urandom вместо rand() */
+    uint64_t sid;
+    ssize_t rnd_ret = getrandom(&sid, sizeof(sid), 0);
+    if (rnd_ret < 0) {
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) {
+            ssize_t rd = read(fd, &sid, sizeof(sid));
+            close(fd);
+            if (rd < (ssize_t)sizeof(sid)) { close(qc->server_fd); qc->server_fd = -1; return -1; }
+        } else {
+            close(qc->server_fd); qc->server_fd = -1; return -1;
+        }
+    }
     hs_pkt.session_id = htonll(sid);
     memcpy(qc->session_id, &sid, 8);
 
-    struct sockaddr_in srv;
-    memset(&srv, 0, sizeof(srv));
-    srv.sin_family = AF_INET;
-    srv.sin_port = htons(server_port);
-    inet_pton(AF_INET, server_addr, &srv.sin_addr);
+    /* HMAC-аутентификация: шифруем session_id расширенным ключом */
+    if (key) {
+        uint8_t expanded_key[160];
+        uint8_t temp_key[32] = {0};
+        for (int i = 0; i < 32 && key[i*2] && key[i*2+1]; i++) {
+            unsigned int byte;
+            sscanf((char*)&key[i*2], "%2x", &byte);
+            temp_key[i] = (uint8_t)byte;
+        }
+        kuznyechik_set_key(temp_key, expanded_key);
+        uint8_t hmac_block[16] = {0};
+        memcpy(hmac_block, &sid, 8);
+        kuznyechik_encrypt_block(hmac_block, expanded_key);
+        memcpy(hs_pkt.auth_tag, hmac_block, 4);
+    }
+
+    /* Создаём sockaddr — поддержка IPv4 и IPv6 */
+    struct sockaddr_storage srv;
+    socklen_t srv_len = sizeof(srv);
+    memset(&srv, 0, srv_len);
+    if (strchr(server_addr, ':')) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&srv;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(server_port);
+        inet_pton(AF_INET6, server_addr, &s6->sin6_addr);
+    } else {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&srv;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(server_port);
+        inet_pton(AF_INET, server_addr, &s4->sin_addr);
+    }
 
     ssize_t sent = sendto(qc->server_fd, &hs_pkt, sizeof(hs_pkt), 0,
-                          (struct sockaddr*)&srv, sizeof(srv));
+                          (struct sockaddr*)&srv, srv_len);
     if (sent < (ssize_t)sizeof(hs_pkt)) {
         log_error("QUIC: handshake send failed");
         close(qc->server_fd); qc->server_fd = -1; return -1;
@@ -89,13 +128,23 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
 
 ssize_t quic_client_send(quic_client_t *qc, const uint8_t *data, size_t len) {
     if (!qc || !qc->active || qc->server_fd < 0) return QUIC_ERROR;
-    struct sockaddr_in srv;
-    memset(&srv, 0, sizeof(srv));
-    srv.sin_family = AF_INET;
-    srv.sin_port = htons(qc->server_port);
-    inet_pton(AF_INET, qc->server_addr, &srv.sin_addr);
+    /* Определяем адрес по наличию ':' в адресе */
+    struct sockaddr_storage srv;
+    socklen_t srv_len = sizeof(srv);
+    memset(&srv, 0, srv_len);
+    if (strchr(qc->server_addr, ':')) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&srv;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(qc->server_port);
+        inet_pton(AF_INET6, qc->server_addr, &s6->sin6_addr);
+    } else {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&srv;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(qc->server_port);
+        inet_pton(AF_INET, qc->server_addr, &s4->sin_addr);
+    }
     ssize_t sent = sendto(qc->server_fd, data, len, 0,
-                          (struct sockaddr*)&srv, sizeof(srv));
+                          (struct sockaddr*)&srv, srv_len);
     if (sent < 0) return QUIC_ERROR;
     return sent;
 }
@@ -113,11 +162,20 @@ ssize_t quic_client_recv(quic_client_t *qc, uint8_t *buf, size_t maxlen, int tim
 
 int quic_client_keepalive(quic_client_t *qc) {
     if (!qc || !qc->active) return QUIC_ERROR;
-    struct sockaddr_in srv;
-    memset(&srv, 0, sizeof(srv));
-    srv.sin_family = AF_INET;
-    srv.sin_port = htons(qc->server_port);
-    inet_pton(AF_INET, qc->server_addr, &srv.sin_addr);
+    struct sockaddr_storage srv;
+    socklen_t srv_len = sizeof(srv);
+    memset(&srv, 0, srv_len);
+    if (strchr(qc->server_addr, ':')) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&srv;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons(qc->server_port);
+        inet_pton(AF_INET6, qc->server_addr, &s6->sin6_addr);
+    } else {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&srv;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons(qc->server_port);
+        inet_pton(AF_INET, qc->server_addr, &s4->sin_addr);
+    }
     gost_packet_t ka;
     memset(&ka, 0, sizeof(ka));
     ka.magic = htonl(GOST_PROXY_MAGIC);
@@ -125,7 +183,7 @@ int quic_client_keepalive(quic_client_t *qc) {
     uint64_t sid; memcpy(&sid, qc->session_id, 8);
     ka.session_id = htonll(sid);
     ssize_t s = sendto(qc->server_fd, &ka, sizeof(ka), 0,
-                       (struct sockaddr*)&srv, sizeof(srv));
+                       (struct sockaddr*)&srv, srv_len);
     return (s > 0) ? QUIC_OK : QUIC_ERROR;
 }
 

@@ -4,16 +4,43 @@
 #include <stdarg.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/stat.h>
 
 #include "log.h"
 
+#define LOG_MAX_SIZE  (10 * 1024 * 1024)  /* 10MB */
+#define LOG_MAX_FILES  5
+
 static FILE *log_fp = NULL;
 static log_level_t current_level = LOG_INFO;
+static char log_file_path[512] = {0};
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *level_names[] = {
     "ERROR", "WARN", "INFO", "DEBUG"
 };
+
+/* Ротация логов: если файл больше LOG_MAX_SIZE — переименовываем */
+static void rotate_log(const char *path) {
+    struct stat st;
+    if (stat(path, &st) < 0 || st.st_size < LOG_MAX_SIZE) return;
+
+    /* Удаляем самый старый архив */
+    char oldest[600];
+    snprintf(oldest, sizeof(oldest), "%s.%d", path, LOG_MAX_FILES);
+    remove(oldest);
+
+    /* Сдвигаем все архивы: .4 → .5, .3 → .4, ..., .1 → .2 */
+    for (int i = LOG_MAX_FILES - 1; i >= 1; i--) {
+        char src[600], dst[600];
+        snprintf(src, sizeof(src), "%s.%d", path, i);
+        snprintf(dst, sizeof(dst), "%s.%d", path, i + 1);
+        rename(src, dst);
+    }
+    char rotated_name[600];
+    snprintf(rotated_name, sizeof(rotated_name), "%s.1", path);
+    rename(path, rotated_name);
+}
 
 int log_init(const char *level_str, const char *file_path) {
     /* Определяем уровень */
@@ -27,6 +54,9 @@ int log_init(const char *level_str, const char *file_path) {
 
     /* Открываем файл лога (если указан) */
     if (file_path && file_path[0]) {
+        strncpy(log_file_path, file_path, sizeof(log_file_path) - 1);
+        log_file_path[sizeof(log_file_path) - 1] = '\0';
+        rotate_log(log_file_path);
         log_fp = fopen(file_path, "a");
         if (!log_fp) {
             fprintf(stderr, "[LOG] Не удалось открыть %s: ", file_path);

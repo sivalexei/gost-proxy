@@ -1,19 +1,39 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "config.h"
 
 /* Простой JSON-парсер: ищет "key": "value" и "key": number */
 
-/* Извлечь строковое значение: "key": "value" */
+/* Извлечь строковое значение: "key": "value"
+ * Проверка границ ключа: пробел/скобка до и после имени */
 static int json_get_string(const char *json, const char *key, char *out, size_t out_size) {
     char needle[128];
     snprintf(needle, sizeof(needle), "\"%s\"", key);
+    size_t needle_len = strlen(needle);
 
     const char *p = strstr(json, needle);
+    while (p) {
+        /* Проверяем границы ключа: символ ДО ключа — не буква/цифра/" */
+        if (p > json) {
+            char prev = *(p - 1);
+            if (isalnum((unsigned char)prev) || prev == '_' || prev == '"') {
+                p = strstr(p + 1, needle);  /* пропуск совпадения в середине другого ключа */
+                continue;
+            }
+        }
+        /* Символ ПОСЛЕ ключа — должен быть " или пробел */
+        char after = *(p + needle_len);
+        if (after != ' ' && after != '\t' && after != '\n' && after != '"') {
+            p = strstr(p + 1, needle);  /* пропуск */
+            continue;
+        }
+        break;  /* нашли корректный ключ */
+    }
     if (!p) return -1;
 
-    p = strchr(p + strlen(needle), ':');
+    p = strchr(p + needle_len, ':');
     if (!p) return -1;
     p++;
 
@@ -65,9 +85,16 @@ void config_defaults(gost_config_t *cfg) {
     cfg->max_sessions = 256;
     cfg->session_timeout = 300;
     cfg->rate_limit = 1000;
-    strcpy(cfg->key, "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF");
+    /* Ключ по умолчанию НЕ задаётся — должен быть указан явно или в GOST_PROXY_KEY */
     strcpy(cfg->log_level, "info");
     strcpy(cfg->log_file, "/var/log/gost-proxy/server.log");
+
+    /* Поддержка env-переменной GOST_PROXY_KEY */
+    const char *env_key = getenv("GOST_PROXY_KEY");
+    if (env_key && env_key[0]) {
+        strncpy(cfg->key, env_key, sizeof(cfg->key) - 1);
+        cfg->key[sizeof(cfg->key) - 1] = '\0';
+    }
 }
 
 int config_load(gost_config_t *cfg, const char *path) {
