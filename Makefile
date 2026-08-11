@@ -8,9 +8,8 @@ SRC_DIR = src
 BUILD_DIR = build
 
 CRYPTO_SRC = $(SRC_DIR)/crypto/gost_cipher.c
-# src/crypto/kuznyechik.asm намеренно исключён из сборки: реализация не проходит
-# контрольные векторы RFC 7801 и аварийно завершается (см. AUDIT_REPORT.md §3).
-# Шифрование обеспечивает C-реализация в gost_cipher.c.
+# Шифрование обеспечивается C-реализацией в gost_cipher.c (RFC 7801)
+# Ассемблерные реализации kuznyechik.asm исключены из репозитория.
 CORE_SRC = $(SRC_DIR)/core/server.c $(SRC_DIR)/core/client.c $(SRC_DIR)/core/session.c
 
 CRYPTO_OBJ = $(BUILD_DIR)/gost_cipher.o

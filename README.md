@@ -5,24 +5,26 @@ SOCKS5-прокси с шифрованием ГОСТ Р 34.12-2015 "Кузне
 ## Возможности
 
 - Шифрование ГОСТ Р 34.12-2015 (Кузнечик) — C-реализация по RFC 7801
-- UDP-транспорт, SOCKS5 на клиенте (127.0.0.1:1080)
+- QUIC-транспорт поверх UDP (рукопожатие, keepalive, мультиплексирование)
 - Auth-tag (encrypt-then-MAC) для проверки целостности
 - CTR-режим для потоковых данных
 - conn_id мультиплексирование — параллельные соединения изолированы
-- TCP write-loop для гарантированной доставки
+- SOCKS5-прокси на клиенте (127.0.0.1:1081)
+- systemd-юниты для автоматического запуска
 
 ## Требования
 
 - Linux x86-64
-- NASM (`sudo apt install nasm`)
-- GCC (`sudo apt install build-essential`)
+- NASM (для `tcp_helpers.asm` — оптимизация TCP write loop)
+- GCC
+- glibc
 
 ## Сборка
 
 ```bash
-make setup    # установка зависимостей
-make          # сборка gost-server и gost-client
-make test     # тесты шифрования (RFC 7801)
+make              # сборка gost-server и gost-client
+make test         # тесты шифрования (все 5 тестов RFC 7801)
+make clean        # очистка
 ```
 
 ## Запуск
@@ -41,10 +43,10 @@ make test     # тесты шифрования (RFC 7801)
 ./build/gost-client /etc/gost-proxy/client.json
 ```
 
-Клиент запускает SOCKS5-прокси на `127.0.0.1:1080`. Настройте Firefox или curl:
+Клиент запускает SOCKS5-прокси на `127.0.0.1:1081`. Настройте curl или браузер:
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1080 https://example.com
+curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ```
 
 ## Архитектура
@@ -54,18 +56,18 @@ src/
 ├── crypto/
 │   ├── gost_cipher.c      # Ядро шифрования, C-реализация (RFC 7801)
 │   ├── kuznyechik.h       # Интерфейс
-│   ├── kuznyechik.asm     # НЕ СОБИРАЕТСЯ: сломан, см. AUDIT_REPORT.md §3
-│   ├── gost_common.h      # Общие определения, структура пакета
-│   └── gost_test.c        # Тесты по RFC 7801
+│   └── gost_common.h      # Общие определения, структура пакета
 ├── core/
 │   ├── server.c           # Прокси-сервер (UDP → TCP)
 │   ├── client.c           # Клиент (SOCKS5 → UDP)
 │   ├── session.c          # pack/unpack с CTR + MAC
 │   ├── protocol.h         # Протокол обмена
 │   ├── config.c           # JSON-парсер конфигурации
-│   └── tcp_helpers.asm    # write loop + hex dump (NASM)
+│   ├── log.c              # Логирование
+│   └── tcp_helpers.asm    # Быстрый TCP write loop (NASM x86-64)
 └── network/
-    └── socks5.c           # SOCKS5 CONNECT + relay
+    ├── socks5.c           # SOCKS5 CONNECT + relay
+    └── quic_layer.c       # QUIC-слой поверх UDP
 ```
 
 ## Протокол
@@ -86,13 +88,9 @@ src/
 ## Сборка пакетов
 
 ```bash
-# DEB (Ubuntu/Debian)
-./build_deb.sh
-ls debs/
-
 # RPM (ALT Linux)
 ./build_rpm.sh
-ls rpmbuild/RPMS/
+ls rpmbuild/RPMS/x86_64/*.rpm
 ```
 
 ## HTTPS через прокси
@@ -101,11 +99,11 @@ ls rpmbuild/RPMS/
 
 **HTTP** работает стабильно. **HTTPS** может не работать с GnuTLS (ALT Linux curl).
 
-Решение — собрите curl с OpenSSL:
+Решение — соберите curl с OpenSSL:
 ```bash
 make build-curl-openssl
 export PATH="$HOME/.local/bin:$PATH"
-curl --socks5-hostname 127.0.0.1:1080 https://example.com
+curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ```
 
 Или используйте Firefox (NSS).
@@ -117,3 +115,18 @@ curl --socks5-hostname 127.0.0.1:1080 https://example.com
 - Ключ 256 бит, блок 128 бит, 10 раундов
 - CTR-режим, encrypt-then-MAC
 - conn_id изолирует параллельные соединения
+
+## Сборка RPM для ALT Linux
+
+```bash
+./build_rpm.sh
+```
+
+Создаёт пакеты:
+- `gost-proxy-server` — сервер с systemd-юнитом
+- `gost-proxy-client` — клиент с systemd-юнитом
+
+```bash
+sudo dnf install gost-proxy-server-1.0.0-2.x86_64.rpm
+sudo systemctl enable --now gost-proxy-server
+```
