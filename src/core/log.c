@@ -42,6 +42,19 @@ static void rotate_log(const char *path) {
     rename(path, rotated_name);
 }
 
+/* Создание директории рекурсивно (mkdir -p) */
+static void mkdirs(const char *path) {
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(tmp, 0755);
+            *p = '/';
+        }
+    }
+}
+
 int log_init(const char *level_str, const char *file_path) {
     /* Определяем уровень */
     current_level = LOG_INFO;
@@ -56,12 +69,26 @@ int log_init(const char *level_str, const char *file_path) {
     if (file_path && file_path[0]) {
         strncpy(log_file_path, file_path, sizeof(log_file_path) - 1);
         log_file_path[sizeof(log_file_path) - 1] = '\0';
+        /* Создаём директорию если не существует */
+        char dir[512];
+        snprintf(dir, sizeof(dir), "%s", file_path);
+        char *slash = strrchr(dir, '/');
+        if (slash) {
+            *slash = '\0';
+            mkdirs(dir);
+        }
         rotate_log(log_file_path);
         log_fp = fopen(file_path, "a");
         if (!log_fp) {
-            fprintf(stderr, "[LOG] Не удалось открыть %s: ", file_path);
-            perror("");
-            return -1;
+            /* Fallback: /tmp если /var/log недоступен */
+            const char *fallback = "/tmp/gost-proxy.log";
+            fprintf(stderr, "[LOG] Не удалось открыть %s, fallback: %s\n", file_path, fallback);
+            log_fp = fopen(fallback, "a");
+            if (!log_fp) {
+                fprintf(stderr, "[LOG] Не удалось открыть %s: ", fallback);
+                perror("");
+                return -1;
+            }
         }
     }
 

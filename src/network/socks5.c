@@ -68,8 +68,7 @@ static void dns_cache_store(const char *host, struct in_addr *addr) {
     pthread_mutex_lock(&dns_cache_lock);
     uint32_t h = dns_cache_hash(host);
     dns_cache_entry_t *e = &dns_cache[h];
-    strncpy(e->host, host, sizeof(e->host) - 1);
-    e->host[sizeof(e->host) - 1] = '\0';
+    snprintf(e->host, sizeof(e->host), "%s", host);
     e->addr = addr->s_addr;
     e->expiry = time(NULL) + DNS_CACHE_TTL;
     e->valid = 1;
@@ -224,15 +223,19 @@ static void* socks5_client_thread(void *arg) {
 
     /* Resolve hostname */
     if (dns_cache_lookup(target_host, &target_addr) != 0) {
-        struct hostent *he = gethostbyname(target_host);
-        if (!he) {
+        struct addrinfo hints = {0}, *result = NULL;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(target_host, NULL, &hints, &result) != 0) {
             uint8_t err[] = { 0x05, 0x04, 0x00, 0x01, 0,0,0,0, 0,0 };
             send(client_fd, err, 10, 0);
             close(client_fd);
             return NULL;
         }
-        target_addr = *(struct in_addr *)he->h_addr_list[0];
+        struct sockaddr_in *sin = (struct sockaddr_in *)result->ai_addr;
+        target_addr = sin->sin_addr;
         dns_cache_store(target_host, &target_addr);
+        freeaddrinfo(result);
     }
 
     uint8_t connect_data[8];

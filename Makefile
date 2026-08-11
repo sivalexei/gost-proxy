@@ -11,7 +11,7 @@ CRYPTO_SRC = $(SRC_DIR)/crypto/gost_cipher.c
 # src/crypto/kuznyechik.asm намеренно исключён из сборки: реализация не проходит
 # контрольные векторы RFC 7801 и аварийно завершается (см. AUDIT_REPORT.md §3).
 # Шифрование обеспечивает C-реализация в gost_cipher.c.
-CORE_SRC = $(SRC_DIR)/core/server.c $(SRC_DIR)/core/client.c $(SRC_DIR)/core/session.c $(SRC_DIR)/core/proxy.c
+CORE_SRC = $(SRC_DIR)/core/server.c $(SRC_DIR)/core/client.c $(SRC_DIR)/core/session.c
 
 CRYPTO_OBJ = $(BUILD_DIR)/gost_cipher.o
 CONFIG_OBJ = $(BUILD_DIR)/config.o
@@ -25,7 +25,7 @@ PROXY_OBJ = $(BUILD_DIR)/proxy.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ)
 
 .PHONY: all clean setup test test-https build-curl-openssl
 
-all: $(BUILD_DIR)/gost-server $(BUILD_DIR)/gost-client $(BUILD_DIR)/gost-proxy
+all: $(BUILD_DIR)/gost-server $(BUILD_DIR)/gost-client
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -37,9 +37,6 @@ $(BUILD_DIR)/server.o: $(SRC_DIR)/core/server.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/client.o: $(SRC_DIR)/core/client.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/proxy.o: $(SRC_DIR)/core/proxy.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/session.o: $(SRC_DIR)/core/session.c | $(BUILD_DIR)
@@ -64,9 +61,6 @@ $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(SERVER_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CLIENT_OBJ)
-	$(CC) $^ -o $@ $(LDFLAGS)
-
-$(BUILD_DIR)/gost-proxy: $(CRYPTO_OBJ) $(PROXY_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 test: $(BUILD_DIR)/gost-test

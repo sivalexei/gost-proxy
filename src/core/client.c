@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -14,13 +15,12 @@
 #include "quic_layer.h"
 #include "kuznyechik.h"
 #include "gost_common.h"
-#include "socks5.h"
-
-static void* keepalive_thread(void *arg);
 #include "protocol.h"
 #include "config.h"
 #include "log.h"
 #include "socks5.h"
+
+static void* keepalive_thread(void *arg);
 
 #define BUFFER_SIZE 2048
 #define DEFAULT_CONFIG "/etc/gost-proxy/client.json"
@@ -81,7 +81,22 @@ int main(int argc, char *argv[]) {
     session.active = 1;
     session.counter = 0;
     memset(session.nonce, 0, NONCE_SIZE);
-    memcpy(session.nonce, &session.session_id, 8);
+    /* Генерация случайного nonce (96 бит) */
+    ssize_t nr = getrandom(session.nonce, NONCE_SIZE, 0);
+    if (nr < NONCE_SIZE) {
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) {
+            ssize_t rd = read(fd, session.nonce, NONCE_SIZE);
+            close(fd);
+            if (rd < NONCE_SIZE) {
+                printf("[ERROR] Failed to generate nonce\n");
+                return 1;
+            }
+        } else {
+            printf("[ERROR] No urandom\n");
+            return 1;
+        }
+    }
     memcpy(session.expanded_key, expanded_key, 160);
     log_info("QUIC session_id=%llu", (unsigned long long)session.session_id);
 

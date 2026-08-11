@@ -61,9 +61,11 @@ tcp_write_all:
     jmp .write_loop
 
 .error:
-    ; rax < 0 — проверяем EINTR (errno=4)
+    ; rax < 0 — проверяем EINTR (4) и EAGAIN (11)
     neg rax
     cmp rax, 4              ; EINTR
+    je .write_loop
+    cmp rax, 11             ; EAGAIN/EWOULDBLOCK
     je .write_loop
     ; Другая ошибка — возвращаем -1
     mov rax, -1

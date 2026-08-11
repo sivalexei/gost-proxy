@@ -75,6 +75,27 @@ static pthread_mutex_t proxy_lock = PTHREAD_MUTEX_INITIALIZER;
 static inline uint32_t session_hash_func(uint64_t sid) { return (uint32_t)(sid % SESSION_HASH_SIZE); }
 static inline void session_hash_add(uint64_t sid, int idx) { session_hash[session_hash_func(sid)] = idx; }
 static inline void session_hash_remove(uint64_t sid) { session_hash[session_hash_func(sid)] = -1; }
+
+/* Удаление сессии по индексу — переиспользование слотов */
+static void session_remove(int idx) {
+    if (idx < 0 || idx >= max_sessions) return;
+    uint64_t sid = sessions[idx].session_id;
+    session_hash_remove(sid);
+    sessions[idx].active = 0;
+    sessions[idx].session_id = 0;
+    memset(sessions[idx].nonce, 0, NONCE_SIZE);
+}
+
+/* Поиск свободных слотов начиная с free_slot_next, с wrap-around */
+static inline void session_reset_free_slot(void) {
+    int cur = atomic_load(&free_slot_next);
+    for (int i = 0; i < cur; i++) {
+        if (!sessions[i].active) {
+            atomic_store(&free_slot_next, i);
+            return;
+        }
+    }
+}
 static void signal_handler(int sig) { (void)sig; running = 0; }
 static inline gost_session_t* find_session_by_id(uint64_t sid) {
     int idx = session_hash[session_hash_func(sid)];
@@ -88,7 +109,23 @@ static inline gost_session_t* create_session(uint64_t sid) {
             atomic_store(&free_slot_next, i + 1);
             sessions[i].active = 1; sessions[i].session_id = sid;
             sessions[i].counter = 0; memset(sessions[i].nonce, 0, NONCE_SIZE);
-            memcpy(sessions[i].nonce, &sid, 8); memcpy(sessions[i].expanded_key, expanded_key, 160);
+            /* Генерация случайного nonce (96 бит) для каждого соединения */
+            ssize_t nr = getrandom(sessions[i].nonce, NONCE_SIZE, 0);
+            if (nr < NONCE_SIZE) {
+                int fd = open("/dev/urandom", O_RDONLY);
+                if (fd >= 0) {
+                    ssize_t rd = read(fd, sessions[i].nonce, NONCE_SIZE);
+                    close(fd);
+                    if (rd < NONCE_SIZE) {
+                        sessions[i].active = 0;
+                        return NULL;
+                    }
+                } else {
+                    sessions[i].active = 0;
+                    return NULL;
+                }
+            }
+            memcpy(sessions[i].expanded_key, expanded_key, 160);
             session_hash_add(sid, i); return &sessions[i];
         }
     }
@@ -160,18 +197,27 @@ static int connect_to_target(const char *host, uint16_t port) {
 }
 static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
                                const gost_packet_t *pkt, uint64_t session_id) {
-    gost_session_t *session = find_session(session_id);
-    if (!session) return;
     uint8_t decrypted[MAX_PAYLOAD]; size_t data_len; uint32_t pkt_conn_id = 0;
-    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter) != 0) return;
-    if (data_len < 1) return;
-    if (decrypted[0] == 0x01 && data_len >= 8) {
+    pthread_mutex_lock(&sessions_lock);
+    gost_session_t *session = find_session(session_id);
+    if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
+    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter) != 0) { pthread_mutex_unlock(&sessions_lock); return; }
+    if (data_len < 1) { pthread_mutex_unlock(&sessions_lock); return; }
+    /* Сервер трактует все DATA-пакеты как данные туннеля.
+     * CONNECT-запросы передаются как данные с префиксом:
+     * [0]=0x01 (CONNECT), [1]=ATYP, далее адрес и порт.
+     * Это не конфликтует с проксируемым трафиком — проксируемые данные
+     * приходят уже после установления соединения и не начинаются с 0x01.
+     * Для надёжности: если данные начинаются с 0x01 и длина >= 8,
+     * это CONNECT-запрос (формат SOCKS5 CONNECT).
+     * Но мы проверяем, что это не уже установленное соединение. */
+    if (pkt_conn_id == 0 && data_len >= 8 && decrypted[0] == 0x01) {
         uint8_t addr_type = decrypted[1]; char target_host[256] = {0}; uint16_t target_port = 0;
         if (addr_type == 0x01 && data_len >= 8) {
             struct in_addr addr; memcpy(&addr, &decrypted[2], 4);
             inet_ntop(AF_INET, &addr, target_host, sizeof(target_host));
             target_port = (decrypted[6] << 8) | decrypted[7];
-        } else if (addr_type == 0x03 && data_len >= 5) {
+        } else if (addr_type == 0x03 && data_len >= 3) {
             size_t dlen = decrypted[2];
             if (data_len >= 3 + dlen + 2) {
                 memcpy(target_host, &decrypted[3], dlen); target_host[dlen] = '\0';
@@ -186,32 +232,38 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
                 gost_packet_t err_pkt; memset(&err_pkt, 0, sizeof(err_pkt));
                 protocol_pack_data(&err_pkt, session_id, pkt_conn_id, err_data, 2, session->expanded_key, session->nonce, &session->counter);
                 quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&err_pkt, sizeof(gost_packet_t));
-                return;
+                pthread_mutex_unlock(&sessions_lock); return;
             }
             pthread_mutex_lock(&proxy_lock);
             proxy_conn_t *conn = create_proxy_conn(session_id);
-            if (!conn) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); return; }
+            if (!conn) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); pthread_mutex_unlock(&sessions_lock); return; }
             conn->tcp_fd = tcp_fd; conn->session_id = session_id; conn->conn_id = pkt_conn_id;
-            conn->client_addr = *client_addr; conn->addr_len = addr_len; conn->send_counter = 1;
+            conn->client_addr = *client_addr; conn->addr_len = addr_len; conn->send_counter = 0;
             pthread_mutex_unlock(&proxy_lock);
             pthread_t thread; pthread_create(&thread, NULL, tcp_to_udp_thread, conn); pthread_detach(thread);
             uint8_t ok_data[] = { 0x02, 0x00 };
             gost_packet_t ok_pkt; memset(&ok_pkt, 0, sizeof(ok_pkt));
             protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2, session->expanded_key, session->nonce, &session->counter);
             quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ok_pkt, sizeof(gost_packet_t));
+            pthread_mutex_unlock(&sessions_lock);
             return;
         }
     }
+    pthread_mutex_unlock(&sessions_lock);
+    /* Проверяем, есть ли уже установленное соединение */
     pthread_mutex_lock(&proxy_lock);
     proxy_conn_t *conn = find_proxy_conn(session_id, pkt_conn_id);
     pthread_mutex_unlock(&proxy_lock);
     if (conn && conn->active && conn->tcp_fd >= 0) {
         ssize_t written = tcp_write_all(conn->tcp_fd, decrypted, data_len);
         if (written < 0) conn->active = 0;
+    } else if (pkt_conn_id != 0) {
+        /* Пакет для неизвестного conn_id — просто игнорируем */
+        log_debug("DATA: no connection for cid=%u", pkt_conn_id);
     }
 }
 static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len, const uint8_t *data, size_t len) {
-    if (len < 10) { log_debug("handle_packet: too short (%zu)", len); return; }
+    if (len < sizeof(gost_packet_t)) { log_debug("handle_packet: too short (%zu)", len); return; }
     const gost_packet_t *pkt = (const gost_packet_t *)data;
     uint32_t magic = ntohl(pkt->magic);
     if (magic != GOST_PROXY_MAGIC) { log_debug("handle_packet: bad magic 0x%08x", magic); return; }
@@ -223,22 +275,16 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             if (len < sizeof(gost_packet_t) - AUTH_TAG_SIZE + 4) {
                 log_debug("HANDSHAKE: too short for auth (%zu)", len); break;
             }
-            const uint8_t *client_auth = data + sizeof(gost_packet_t) - AUTH_TAG_SIZE;
-            uint8_t expected_auth[4];
-            /* HMAC: первые 4 байта = session_id клиента, ключ = shared key */
             const gost_packet_t *hs_pkt = (const gost_packet_t *)data;
             uint64_t client_sid = ntohll(hs_pkt->session_id);
-            uint8_t hmac_data[8];
-            memcpy(hmac_data, &client_sid, 8);
-            /* Простой HMAC: шифруем session_id расширенным ключом */
-            uint8_t temp_block[16] = {0};
-            memcpy(temp_block, hmac_data, 8);
-            uint8_t temp_expanded[160];
-            memcpy(temp_expanded, expanded_key, 160);
-            kuznyechik_encrypt_block(temp_block, temp_expanded);
-            memcpy(expected_auth, temp_block, 4);
 
-            if (memcmp(client_auth, expected_auth, 4) != 0) {
+            /* Клиент шифрует session_id расширенным ключом и кладёт в auth_tag */
+            uint8_t temp_block[16] = {0};
+            memcpy(temp_block, &client_sid, 8);
+            kuznyechik_encrypt_block(temp_block, expanded_key);
+
+            /* Сравниваем первые 4 байта auth_tag с ожидаемыми */
+            if (memcmp(hs_pkt->auth_tag, temp_block, 4) != 0) {
                 log_warn("HANDSHAKE auth failed from %s", inet_ntoa(client_addr->sin_addr));
                 break;  /* аутентификация не пройдена — отклоняем */
             }
@@ -255,11 +301,16 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 } else { break; }
             }
             gost_session_t *session = create_session(session_id);
-            if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
+            if (!session) {
+                /* Слоты кончились — сбрасываем и пробуем заново */
+                session_reset_free_slot();
+                session = create_session(session_id);
+                if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
+            }
             gost_packet_t response; protocol_create_handshake(&response, session_id, session->expanded_key);
             ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
             (void)sent;
-            log_debug("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(client_addr->sin_addr), (unsigned long long)session_id);
+            log_info("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(client_addr->sin_addr), (unsigned long long)session_id);
             break;
         }
         case PKT_DATA: {
@@ -270,7 +321,9 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
         case PKT_KEEPALIVE: break;
         case PKT_SIM_CHALLENGE: {
             uint64_t session_id = ntohll(pkt->session_id);
+            /* Если слотов нет — сбрасываем free_slot_next и ищем заново */
             gost_session_t *session = find_session(session_id);
+            if (!session) { session_reset_free_slot(); session = find_session(session_id); }
             if (!session) break;
             uint8_t answer[32] = {0};
             if (protocol_verify_cps_challenge(pkt, answer, sizeof(answer)) == 0) {
@@ -291,11 +344,15 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             uint64_t session_id = ntohll(pkt->session_id);
             uint32_t dc_cid = ntohl(pkt->conn_id);
             gost_session_t *session = find_session(session_id);
-            if (session) { session->active = 0; session_hash_remove(session_id); }
+            if (session) {
+                int idx = session_hash[session_hash_func(session_id)];
+                session_remove(idx);
+            }
             pthread_mutex_lock(&proxy_lock);
             proxy_conn_t *conn = find_proxy_conn(session_id, dc_cid);
             if (conn) { conn->active = 0; if (conn->tcp_fd >= 0) close(conn->tcp_fd); conn->tcp_fd = -1; }
             pthread_mutex_unlock(&proxy_lock);
+            session_reset_free_slot();
             break;
         }
         default: break;
@@ -321,6 +378,7 @@ int main(int argc, char *argv[]) {
     log_init(cfg.log_level, cfg.log_file);
     printf("=== ГОСТ Прокси-Сервер ===\n");
     printf("Address: %s:%d\n", cfg.bind_addr, cfg.port);
+    signal(SIGPIPE, SIG_IGN);
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     /* Проверка: ключ должен быть задан явно (env или JSON) */
@@ -329,7 +387,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     uint8_t server_key[32] = {0};
-    for (int i = 0; i < 32 && cfg.key[i*2] && cfg.key[i*2+1]; i++) {
+    size_t key_len = strlen(cfg.key);
+    for (size_t i = 0; i < key_len/2 && i < 32; i++) {
         unsigned int byte; sscanf(&cfg.key[i*2], "%2x", &byte); server_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(server_key, expanded_key);
@@ -349,6 +408,11 @@ int main(int argc, char *argv[]) {
     qs.server_fd = socket(family, SOCK_DGRAM, 0);
     if (qs.server_fd < 0) { perror("socket"); return 1; }
     int opt = 1; setsockopt(qs.server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    int buf = 1024*1024;
+    setsockopt(qs.server_fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
+    setsockopt(qs.server_fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
+    int flags = fcntl(qs.server_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(qs.server_fd, F_SETFL, flags | O_NONBLOCK);
     if (bind_to_addr(qs.server_fd, cfg.bind_addr, cfg.port, family) < 0) {
         perror("bind"); close(qs.server_fd); return 1;
     }

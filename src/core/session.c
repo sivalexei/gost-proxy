@@ -76,28 +76,6 @@ void protocol_generate_header_permutation(const uint8_t *seed, uint8_t *perm, si
     }
 }
 
-void protocol_encrypt_header_seed(const uint8_t *plaintext_seed, size_t seed_len,
-                                   const uint8_t *expanded_key, uint8_t *encrypted_seed) {
-    for (size_t i = 0; i < seed_len; i += 16) {
-        uint8_t block[16] = {0};
-        size_t copy = (seed_len - i > 16) ? 16 : (seed_len - i);
-        memcpy(block, plaintext_seed + i, copy);
-        kuznyechik_encrypt_block(block, expanded_key);
-        memcpy(encrypted_seed + i, block, 16);
-    }
-}
-
-void protocol_decrypt_header_seed(const uint8_t *encrypted_seed, size_t seed_len,
-                                   const uint8_t *expanded_key, uint8_t *plaintext_seed) {
-    for (size_t i = 0; i < seed_len; i += 16) {
-        uint8_t block[16];
-        memcpy(block, encrypted_seed + i, 16);
-        kuznyechik_decrypt_block(block, expanded_key);
-        size_t copy = (seed_len - i > 16) ? 16 : (seed_len - i);
-        memcpy(plaintext_seed + i, block, copy);
-    }
-}
-
 /* ============================================================
  * Random padding
  * ============================================================ */
@@ -154,26 +132,6 @@ void protocol_insert_padding(uint8_t *payload, uint32_t *data_len,
     *data_len += padding_len;
 }
 
-void protocol_remove_padding(uint8_t *payload, uint32_t *data_len, const uint8_t *seed) {
-    if (*data_len < PADDING_MIN_BYTES) return;
-
-    prng_seed(seed, HEADER_SEED_SIZE);
-    uint32_t padding_len = protocol_compute_padding(seed, HEADER_SEED_SIZE);
-
-    if (*data_len < padding_len) return;
-
-    uint32_t split = padding_len / 2;
-    uint32_t left = split;
-    size_t new_len = *data_len - padding_len;
-
-    /* Сдвигаем данные влево, убираем padding */
-    memmove(payload, payload + left, new_len);
-    *data_len = (uint32_t)new_len;
-
-    /* Очищаем оставшуюся часть буфера */
-    memset(payload + new_len, 0, padding_len);
-}
-
 /* ============================================================
  * MAC (unchanged) — encrypt(xor_all_blocks_of_payload, key) */
 static void compute_mac(
@@ -202,13 +160,7 @@ static void make_ctr_nonce(const uint8_t *session_nonce, uint32_t counter, uint8
     out16[15] = (counter >> 0)  & 0xFF;
 }
 
-/* ============================================================
- * Динамические заголовки — перестановка байтов payload
- * ============================================================ */
-static void apply_permutation(uint8_t *data, size_t data_len,
-                               const uint8_t *perm, size_t perm_len);
-static void inverse_permutation(uint8_t *data, size_t data_len,
-                                 const uint8_t *perm, size_t perm_len);
+
 
 /*
  * protocol_pack_data — шифрование и упаковка пакета данных.
@@ -270,42 +222,17 @@ int protocol_pack_data(
     pkt->payload[6] = (total_len >> 8)  & 0xFF;
     pkt->payload[7] = (total_len >> 0)  & 0xFF;
 
-    /* Вставляем случайный padding (изменяет payload_data_len, НЕ total_len) */
+    /* Вставляем случайный padding */
     protocol_insert_padding(pkt->payload + 8, &payload_data_len, padding_len, seed);
-
-    /* Применяем динамическую перестановку к payload (данные+padding) */
-    uint8_t perm[HEADER_FIELD_COUNT];
-    protocol_generate_header_permutation(seed, perm, HEADER_FIELD_COUNT);
-    apply_permutation(pkt->payload + 8, payload_data_len, perm, HEADER_FIELD_COUNT);
-
-    /* data_len поле записываем ПОСЛЕ padding и permutation (payload[4..7] могут быть затёрты) */
-    pkt->payload[4] = (total_len >> 24) & 0xFF;
-    pkt->payload[5] = (total_len >> 16) & 0xFF;
-    pkt->payload[6] = (total_len >> 8)  & 0xFF;
-    pkt->payload[7] = (total_len >> 0)  & 0xFF;
 
     /* Шифруем всё КРОМЕ первых 4 байт (counter) */
     uint8_t ctr_nonce[16];
     make_ctr_nonce(nonce, pkt_counter, ctr_nonce);
-    fprintf(stderr, "DEBUG pack: BEFORE encrypt payload[4..19] = %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
-            pkt->payload[4], pkt->payload[5], pkt->payload[6], pkt->payload[7],
-            pkt->payload[8], pkt->payload[9], pkt->payload[10], pkt->payload[11],
-            pkt->payload[12], pkt->payload[13], pkt->payload[14], pkt->payload[15],
-            pkt->payload[16], pkt->payload[17], pkt->payload[18], pkt->payload[19]);
-    fprintf(stderr, "DEBUG pack: BEFORE encrypt payload[52..69] = %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
-            pkt->payload[52], pkt->payload[53], pkt->payload[54], pkt->payload[55],
-            pkt->payload[56], pkt->payload[57], pkt->payload[58], pkt->payload[59],
-            pkt->payload[60], pkt->payload[61], pkt->payload[62], pkt->payload[63],
-            pkt->payload[64], pkt->payload[65], pkt->payload[66], pkt->payload[67]);
-    
-    uint8_t perm_check[HEADER_FIELD_COUNT];
-    protocol_generate_header_permutation(seed, perm_check, HEADER_FIELD_COUNT);
-    fprintf(stderr, "DEBUG pack: perm[0..3] = %u %u %u %u\n", perm_check[0], perm_check[1], perm_check[2], perm_check[3]);
     kuznyechik_encrypt_ctr(pkt->payload + 4, pkt->payload + 4, MAX_PAYLOAD - 4,
                            expanded_key, ctr_nonce);
 
-    /* Encrypt-then-MAC: MAC от ВСЕГО payload (включая открытый counter) */
-    compute_mac(pkt->payload, MAX_PAYLOAD, expanded_key, pkt->auth_tag);
+    /* Encrypt-then-MAC: MAC от всего payload (открытый counter + зашифрованные данные) */
+    compute_mac(pkt->payload, 8 + total_len, expanded_key, pkt->auth_tag);
 
     return 0;
 }
@@ -339,14 +266,6 @@ int protocol_unpack_data(
                            ((uint32_t)pkt->payload[2] << 8)  |
                            ((uint32_t)pkt->payload[3]);
 
-    /* Проверяем MAC от ВСЕГО payload */
-    uint8_t expected_mac[AUTH_TAG_SIZE];
-    compute_mac(pkt->payload, MAX_PAYLOAD, expanded_key, expected_mac);
-    int mac_ok = (memcmp(pkt->auth_tag, expected_mac, AUTH_TAG_SIZE) == 0);
-    if (!mac_ok) {
-        return -1;  /* MAC mismatch — отбрасываем, counter НЕ обновляем */
-    }
-
     /* Replay protection: pkt_counter должен быть > *counter
      * Но *counter == 0 означает "не инициализирован" — пропускаем */
     if (*counter != 0 && pkt_counter <= *counter) {
@@ -360,46 +279,37 @@ int protocol_unpack_data(
     kuznyechik_encrypt_ctr(pkt->payload + 4, decrypted, MAX_PAYLOAD - 4,
                            expanded_key, ctr_nonce);
 
-    fprintf(stderr, "DEBUG unpack: decrypted[0..3] = %02X %02X %02X %02X\n",
-            decrypted[0], decrypted[1], decrypted[2], decrypted[3]);
-    fprintf(stderr, "DEBUG unpack: pkt->payload[0..7] = %02X %02X %02X %02X %02X %02X %02X %02X\n",
-            pkt->payload[0], pkt->payload[1], pkt->payload[2], pkt->payload[3],
-            pkt->payload[4], pkt->payload[5], pkt->payload[6], pkt->payload[7]);
-    fprintf(stderr, "DEBUG unpack: decrypted[4..11] = %02X %02X %02X %02X %02X %02X %02X %02X\n",
-            decrypted[4], decrypted[5], decrypted[6], decrypted[7],
-            decrypted[8], decrypted[9], decrypted[10], decrypted[11]);
-
-    /* Извлекаем total_len (data + padding) */
-    uint32_t total_len = ((uint32_t)decrypted[0] << 24) |
-                         ((uint32_t)decrypted[1] << 16) |
-                         ((uint32_t)decrypted[2] << 8)  |
-                         ((uint32_t)decrypted[3]);
+    /* Извлекаем total_len (data + padding) из decrypted[4..7] */
+    uint32_t total_len = ((uint32_t)decrypted[4] << 24) |
+                         ((uint32_t)decrypted[5] << 16) |
+                         ((uint32_t)decrypted[6] << 8)  | ((uint32_t)decrypted[7]);
     if (total_len > MAX_PAYLOAD - 4) return -1;
+    if (total_len < 8) return -1;
 
-    /* Генерируем seed и permutation из session_id */
-    uint64_t sid = ntohll(pkt->session_id);
-    uint8_t seed[HEADER_SEED_SIZE];
-    protocol_generate_header_seed(sid, seed, HEADER_SEED_SIZE);
-    uint8_t perm[HEADER_FIELD_COUNT];
-    protocol_generate_header_permutation(seed, perm, HEADER_FIELD_COUNT);
-    uint32_t padding_len = protocol_compute_padding(seed, HEADER_SEED_SIZE);
-    /* Clamp: padding не может быть больше total_len - MIN_DATA (8 байт мин.) */
-    uint32_t max_padding = total_len > 8 ? total_len - 8 : 0;
-    if (padding_len > max_padding) padding_len = max_padding;
-    if (padding_len < 4) padding_len = 4;
+    /* Проверяем MAC от ВСЕГО payload (открытый counter + зашифрованные данные) */
+    uint8_t expected_mac[AUTH_TAG_SIZE];
+    compute_mac(pkt->payload, 8 + total_len, expanded_key, expected_mac);
+    int mac_ok = (memcmp(pkt->auth_tag, expected_mac, AUTH_TAG_SIZE) == 0);
+    if (!mac_ok) {
+        return -1;  /* MAC mismatch — отбрасываем, counter НЕ обновляем */
+    }
 
-    /* Применяем ОБРАТНУЮ перестановку к данным (undo header scrambling) */
-    /* total_len уже содержит padding, perm применялся ко всем total_len байтам */
-    inverse_permutation(decrypted + 8, total_len, perm, HEADER_FIELD_COUNT);
+    /* Извлекаем counter из расшифрованных данных (дублирует открытый, для проверки целостности) */
+    uint32_t pkt_counter2 = ((uint32_t)decrypted[0] << 24) |
+                            ((uint32_t)decrypted[1] << 16) |
+                            ((uint32_t)decrypted[2] << 8)  | ((uint32_t)decrypted[3]);
 
-    /* Извлекаем реальный data_len (убираем padding) */
-    uint32_t real_len = total_len - padding_len;
+    /* Replay protection */
+    if (*counter != 0 && pkt_counter2 <= *counter) {
+        return -1;
+    }
+
+    uint32_t real_len = total_len - 8;
     *data_len = real_len;
+    memcpy(data, decrypted + 8, real_len);
 
-    memcpy(data, decrypted + 8 + padding_len, real_len);
-
-    /* Обновляем counter значением из пакета */
-    *counter = pkt_counter;
+    /* Обновляем counter */
+    *counter = pkt_counter2;
     return 0;
 }
 
@@ -422,16 +332,6 @@ int protocol_create_handshake(
     kuznyechik_encrypt_block(signature, expanded_key);
     memcpy(pkt->auth_tag, signature, AUTH_TAG_SIZE);
 
-    return 0;
-}
-
-int protocol_verify_handshake(
-    const gost_packet_t *pkt,
-    const uint8_t *expanded_key
-) {
-    if (!pkt || !expanded_key) return -1;
-    if (pkt->type != PKT_HANDSHAKE) return -1;
-    if (ntohl(pkt->magic) != GOST_PROXY_MAGIC) return -1;
     return 0;
 }
 
@@ -468,41 +368,7 @@ int protocol_check_counter(uint32_t expected, uint32_t last)
     return 1; /* ok, counter новый */
 }
 
-/* ============================================================
- * Динамические заголовки — перестановка байтов payload
- * ============================================================ */
 
-/* Применить перестановку к данным (shuffle байтов) */
-static void apply_permutation(uint8_t *data, size_t data_len,
-                               const uint8_t *perm, size_t perm_len) {
-    uint8_t tmp[MAX_PAYLOAD];
-    for (size_t i = 0; i < data_len; i++) {
-        size_t block_start = (i / perm_len) * perm_len;
-        size_t offset = perm[i % perm_len];
-        size_t src = block_start + offset;
-        if (src < data_len) {
-            tmp[i] = data[src];
-        } else {
-            tmp[i] = data[i % perm_len];
-        }
-    }
-    memcpy(data, tmp, data_len);
-}
-
-/* Обратная перестановка */
-static void inverse_permutation(uint8_t *data, size_t data_len,
-                                 const uint8_t *perm, size_t perm_len) {
-    uint8_t tmp[MAX_PAYLOAD];
-    memset(tmp, 0, sizeof(tmp));
-    for (size_t i = 0; i < data_len; i++) {
-        size_t block_start = (i / perm_len) * perm_len;
-        size_t dst_pos = block_start + perm[i % perm_len];
-        if (dst_pos < data_len) {
-            tmp[dst_pos] = data[i];
-        }
-    }
-    memcpy(data, tmp, data_len);
-}
 
 /* Инициализация сессии с генерацией header seed и permutation */
 int protocol_init_session(gost_session_t *session, const uint8_t *key) {
@@ -517,15 +383,6 @@ int protocol_init_session(gost_session_t *session, const uint8_t *key) {
     session->cps_enabled = 1;
 
     return 0;
-}
-
-/* Проверка, является ли пакет имитационным */
-int protocol_is_fake_packet(const gost_packet_t *pkt) {
-    if (!pkt) return 0;
-    return (pkt->type == PKT_SIM_QUIC ||
-            pkt->type == PKT_SIM_DNS ||
-            pkt->type == PKT_SIM_TLS ||
-            pkt->type == PKT_SIM_CHALLENGE);
 }
 
 /* Формирование fake QUIC-пакета для имитации */

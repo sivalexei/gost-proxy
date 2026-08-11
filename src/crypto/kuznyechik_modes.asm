@@ -45,7 +45,7 @@ kuznyechik_encrypt_ecb:
 ;        rcx = expanded_key,
 ;        r8  = nonce (16 байт, счётчик в младших 8 байтах)
 ; ----------------------------------------------
-kuznyechik_encrypt_ctr:
+kuznyechik_encrypt_ctr_asm:
     push rbp
     mov rbp, rsp
     sub rsp, 64

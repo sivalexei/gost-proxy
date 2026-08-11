@@ -64,15 +64,9 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
     /* HMAC-аутентификация: шифруем session_id расширенным ключом */
     if (key) {
         uint8_t expanded_key[160];
-        uint8_t temp_key[32] = {0};
-        for (int i = 0; i < 32 && key[i*2] && key[i*2+1]; i++) {
-            unsigned int byte;
-            sscanf((char*)&key[i*2], "%2x", &byte);
-            temp_key[i] = (uint8_t)byte;
-        }
-        kuznyechik_set_key(temp_key, expanded_key);
         uint8_t hmac_block[16] = {0};
         memcpy(hmac_block, &sid, 8);
+        kuznyechik_set_key(key, expanded_key);
         kuznyechik_encrypt_block(hmac_block, expanded_key);
         memcpy(hs_pkt.auth_tag, hmac_block, 4);
     }
@@ -121,7 +115,9 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
     qc->active = 1;
-    memcpy(qc->session_id, &r->session_id, 8);
+    /* session_id из пакета — network byte order, сохраняем в host order */
+    uint64_t sid_host = ntohll(r->session_id);
+    memcpy(qc->session_id, &sid_host, 8);
     log_info("QUIC: handshake OK (session_id=%llu)", (unsigned long long)ntohll(r->session_id));
     return 0;
 }
@@ -210,8 +206,9 @@ ssize_t quic_server_recv(quic_server_t *qs, uint8_t *buf, size_t max_len,
     if (!qs || !qs->active || qs->server_fd < 0) return QUIC_ERROR;
     struct pollfd pfd = { .fd = qs->server_fd, .events = POLLIN };
     int ret = poll(&pfd, 1, timeout_ms);
-    if (ret == 0) return 0;
+    if (ret == 0) return 0;  /* timeout */
     if (ret < 0) return QUIC_ERROR;
+    if (!(pfd.revents & POLLIN)) return 0;  /* не POLLIN — нет данных */
     *addr_len = sizeof(struct sockaddr_in);
     ssize_t n = recvfrom(qs->server_fd, buf, max_len, 0,
                          (struct sockaddr*)client_addr, addr_len);

@@ -10,13 +10,6 @@ void protocol_generate_header_seed(uint64_t session_id, uint8_t *seed, size_t se
 /* Генерация перестановки полей заголовка из seed (Fisher-Yates) */
 void protocol_generate_header_permutation(const uint8_t *seed, uint8_t *perm, size_t perm_len);
 
-/* Шифрование seed для хранения в сессии */
-void protocol_encrypt_header_seed(const uint8_t *plaintext_seed, size_t seed_len,
-                                   const uint8_t *expanded_key, uint8_t *encrypted_seed);
-
-/* Расшифровка seed из сессии */
-void protocol_decrypt_header_seed(const uint8_t *encrypted_seed, size_t seed_len,
-                                   const uint8_t *expanded_key, uint8_t *plaintext_seed);
 
 /* Вычисление длины padding для пакета */
 uint32_t protocol_compute_padding(const uint8_t *seed, uint32_t seed_len);
@@ -25,8 +18,14 @@ uint32_t protocol_compute_padding(const uint8_t *seed, uint32_t seed_len);
 void protocol_insert_padding(uint8_t *payload, uint32_t *data_len,
                               uint32_t padding_len, const uint8_t *seed);
 
-/* Удаление padding из payload */
-void protocol_remove_padding(uint8_t *payload, uint32_t *data_len, const uint8_t *seed);
+
+
+/* Инициализация сессии с клиентом */
+int protocol_init_session(gost_session_t *session, const uint8_t *key);
+
+/* Формирование CPS challenge/answer — возвращает 0 если challenge принят */
+int protocol_make_cps_challenge(gost_packet_t *pkt, const uint8_t *seed, size_t seed_len,
+                                 uint8_t *challenge_out, uint8_t *answer_out);
 
 /* Формирование fake QUIC-пакета для имитации */
 int protocol_make_fake_quic(gost_packet_t *pkt, const uint8_t *seed, size_t seed_len);
@@ -36,16 +35,6 @@ int protocol_make_fake_dns(gost_packet_t *pkt, const uint8_t *seed, size_t seed_
 
 /* Формирование fake TLS ClientHello для имитации */
 int protocol_make_fake_tls(gost_packet_t *pkt, const uint8_t *seed, size_t seed_len);
-
-/* Проверка, является ли пакет имитационным */
-int protocol_is_fake_packet(const gost_packet_t *pkt);
-
-/* Инициализация сессии с клиентом */
-int protocol_init_session(gost_session_t *session, const uint8_t *key);
-
-/* Формирование CPS challenge/answer — возвращает 0 если challenge принят */
-int protocol_make_cps_challenge(gost_packet_t *pkt, const uint8_t *seed, size_t seed_len,
-                                 uint8_t *challenge_out, uint8_t *answer_out);
 
 /* Проверка CPS challenge — возвращает 0 если challenge верный */
 int protocol_verify_cps_challenge(const gost_packet_t *pkt, uint8_t *answer, size_t answer_len);
@@ -80,10 +69,5 @@ int protocol_create_handshake(
     const uint8_t *expanded_key
 );
 
-/* Проверка handshake */
-int protocol_verify_handshake(
-    const gost_packet_t *pkt,
-    const uint8_t *expanded_key
-);
 
 #endif /* PROTOCOL_H */

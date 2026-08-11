@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "quic_layer.h"
 
-#define SOCKS5_PORT 1080
+#define SOCKS5_PORT 1081
 
 /* Запуск локального SOCKS5-прокси */
 int socks5_start(uint16_t port, const char *server_ip, uint16_t server_port,

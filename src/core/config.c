@@ -23,9 +23,9 @@ static int json_get_string(const char *json, const char *key, char *out, size_t 
                 continue;
             }
         }
-        /* Символ ПОСЛЕ ключа — должен быть " или пробел */
+        /* Символ ПОСЛЕ ключа — должен быть пробел или «:» */
         char after = *(p + needle_len);
-        if (after != ' ' && after != '\t' && after != '\n' && after != '"') {
+        if (after != ' ' && after != '\t' && after != '\n' && after != ':') {
             p = strstr(p + 1, needle);  /* пропуск */
             continue;
         }
