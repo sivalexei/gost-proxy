@@ -167,7 +167,7 @@ static void* tcp_to_udp_thread(void *arg) {
                 size_t chunk = (size_t)n - off;
                 if (chunk > MAX_PAYLOAD - 4) chunk = MAX_PAYLOAD - 4;
                 gost_packet_t pkt;
-                if (protocol_pack_data(&pkt, conn->session_id, conn->conn_id, buf + off, chunk, session->expanded_key, session->nonce, &conn->send_counter) == 0) {
+                if (protocol_pack_data(&pkt, conn->session_id, conn->conn_id, buf + off, chunk, session->expanded_key, session->nonce, &conn->send_counter, 1) == 0) {
                     quic_server_send(&qs, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
                 }
                 off += chunk;
@@ -201,7 +201,7 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
     pthread_mutex_lock(&sessions_lock);
     gost_session_t *session = find_session(session_id);
     if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
-    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter) != 0) { pthread_mutex_unlock(&sessions_lock); return; }
+    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter, 0) != 0) { pthread_mutex_unlock(&sessions_lock); return; }
     if (data_len < 1) { pthread_mutex_unlock(&sessions_lock); return; }
     /* Сервер трактует все DATA-пакеты как данные туннеля.
      * CONNECT-запросы передаются как данные с префиксом:
@@ -230,7 +230,7 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
             if (tcp_fd < 0) {
                 uint8_t err_data[] = { 0x02, 0x01 };
                 gost_packet_t err_pkt; memset(&err_pkt, 0, sizeof(err_pkt));
-                protocol_pack_data(&err_pkt, session_id, pkt_conn_id, err_data, 2, session->expanded_key, session->nonce, &session->counter);
+                protocol_pack_data(&err_pkt, session_id, pkt_conn_id, err_data, 2, session->expanded_key, session->nonce, &session->counter, 1);
                 quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&err_pkt, sizeof(gost_packet_t));
                 pthread_mutex_unlock(&sessions_lock); return;
             }
@@ -243,7 +243,7 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
             pthread_t thread; pthread_create(&thread, NULL, tcp_to_udp_thread, conn); pthread_detach(thread);
             uint8_t ok_data[] = { 0x02, 0x00 };
             gost_packet_t ok_pkt; memset(&ok_pkt, 0, sizeof(ok_pkt));
-            protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2, session->expanded_key, session->nonce, &session->counter);
+            protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2, session->expanded_key, session->nonce, &session->counter, 1);
             quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ok_pkt, sizeof(gost_packet_t));
             pthread_mutex_unlock(&sessions_lock);
             return;
@@ -290,6 +290,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             }
 
             /* Генерация session_id из /dev/urandom вместо rand() */
+            /* session_id в host byte order */
             uint64_t session_id;
             ssize_t rnd_ret = getrandom(&session_id, sizeof(session_id), 0);
             if (rnd_ret < 0) {
@@ -301,6 +302,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 } else { break; }
             }
             gost_session_t *session = create_session(session_id);
+            (void)rnd_ret;
             if (!session) {
                 /* Слоты кончились — сбрасываем и пробуем заново */
                 session_reset_free_slot();
@@ -333,7 +335,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 memset(&resp, 0, sizeof(resp));
                 resp.magic = htonl(GOST_PROXY_MAGIC);
                 resp.type = PKT_SIM_CHALLENGE;
-                resp.session_id = htonll(session_id);
+                resp.session_id = session_id;
                 memcpy(resp.payload, answer, 32);
                 quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&resp, sizeof(resp));
                 log_info("CPS challenge verified (sid=%llu)", (unsigned long long)session_id);

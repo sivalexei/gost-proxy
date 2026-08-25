@@ -3,25 +3,18 @@
 
 #include "gost_common.h"
 #include "kuznyechik.h"
-
-/* Генерация seed для динамических заголовков из session_id */
-void protocol_generate_header_seed(uint64_t session_id, uint8_t *seed, size_t seed_len);
-
-/* Генерация перестановки полей заголовка из seed (Fisher-Yates) */
-void protocol_generate_header_permutation(const uint8_t *seed, uint8_t *perm, size_t perm_len);
-
+#include "obfuscation.h"
 
 /* Вычисление длины padding для пакета */
-uint32_t protocol_compute_padding(const uint8_t *seed, uint32_t seed_len);
+uint32_t protocol_compute_padding(uint64_t session_id, uint32_t seed_len);
 
 /* Вставка случайного padding в payload */
 void protocol_insert_padding(uint8_t *payload, uint32_t *data_len,
-                              uint32_t padding_len, const uint8_t *seed);
+                              uint32_t padding_len, uint64_t session_id);
 
 
-
-/* Инициализация сессии с клиентом */
-int protocol_init_session(gost_session_t *session, const uint8_t *key);
+/* Инициализация сессии с клиентом (убрано — больше не нужно) */
+/* int protocol_init_session(gost_session_t *session, const uint8_t *key); */
 
 /* Формирование CPS challenge/answer — возвращает 0 если challenge принят */
 int protocol_make_cps_challenge(gost_packet_t *pkt, const uint8_t *seed, size_t seed_len,
@@ -39,19 +32,26 @@ int protocol_make_fake_tls(gost_packet_t *pkt, const uint8_t *seed, size_t seed_
 /* Проверка CPS challenge — возвращает 0 если challenge верный */
 int protocol_verify_cps_challenge(const gost_packet_t *pkt, uint8_t *answer, size_t answer_len);
 
-/* Упаковка пакета данных */
+/* Упаковка пакета данных с обфускацией
+ * session_id — в host byte order (НЕ htonll)
+ * obf_key_dir — направление: 0 = client->server, 1 = server->client
+ */
 int protocol_pack_data(
     gost_packet_t *pkt,
-    uint64_t session_id,
+    uint64_t session_id,          /* host byte order */
     uint32_t conn_id,
     const uint8_t *data,
     size_t data_len,
     const uint8_t *expanded_key,
     const uint8_t *nonce,
-    uint32_t *counter
+    uint32_t *counter,
+    uint8_t obf_key_dir
 );
 
-/* Распаковка пакета данных */
+/* Распаковка пакета данных с обфускацией
+ * session_id — в host byte order (НЕ htonll)
+ * obf_key_dir — направление: 0 = client->server, 1 = server->client
+ */
 int protocol_unpack_data(
     const gost_packet_t *pkt,
     uint8_t *data,
@@ -59,15 +59,15 @@ int protocol_unpack_data(
     uint32_t *out_conn_id,
     const uint8_t *expanded_key,
     const uint8_t *nonce,
-    uint32_t *counter
+    uint32_t *counter,
+    uint8_t obf_key_dir
 );
 
 /* Формирование handshake */
 int protocol_create_handshake(
     gost_packet_t *pkt,
-    uint64_t session_id,
+    uint64_t session_id,          /* host byte order */
     const uint8_t *expanded_key
 );
-
 
 #endif /* PROTOCOL_H */

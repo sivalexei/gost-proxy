@@ -58,8 +58,8 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
             close(qc->server_fd); qc->server_fd = -1; return -1;
         }
     }
+    /* session_id в host byte order, конвертируем при отправке */
     hs_pkt.session_id = htonll(sid);
-    memcpy(qc->session_id, &sid, 8);
 
     /* HMAC-аутентификация: шифруем session_id расширенным ключом */
     if (key) {
@@ -115,9 +115,10 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
     qc->active = 1;
-    /* session_id из пакета — network byte order, сохраняем в host order */
-    uint64_t sid_host = ntohll(r->session_id);
-    memcpy(qc->session_id, &sid_host, 8);
+    /* session_id — конвертируем из сетевого в хост-порядок */
+    uint64_t sid_net;
+    memcpy(&sid_net, &r->session_id, 8);
+    *(uint64_t*)qc->session_id = ntohll(sid_net);
     log_info("QUIC: handshake OK (session_id=%llu)", (unsigned long long)ntohll(r->session_id));
     return 0;
 }

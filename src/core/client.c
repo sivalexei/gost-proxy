@@ -76,7 +76,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* session_id получен из handshake в quic_client_connect */
+    /* session_id получен из handshake в quic_client_connect (host byte order) */
     memcpy(&session.session_id, quic_client.session_id, 8);
     session.active = 1;
     session.counter = 0;
@@ -103,38 +103,35 @@ int main(int argc, char *argv[]) {
     /* === CPS handshake === */
     printf("\n[SECURITY] Инициализация CPS (Chaffing/Pretense System)...\n");
 
-    /* Генерируем seed из session_id */
     uint8_t cps_seed[HEADER_SEED_SIZE];
-    protocol_generate_header_seed(session.session_id, cps_seed, HEADER_SEED_SIZE);
+    memcpy(cps_seed, &session.session_id, 8); memset(cps_seed+8, 0, HEADER_SEED_SIZE-8);
 
-    /* Отправляем fake пакеты для chaffing */
     gost_packet_t fake_pkt;
     memset(&fake_pkt, 0, sizeof(fake_pkt));
     protocol_make_fake_quic(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
-    fake_pkt.session_id = htonll(session.session_id);
+    fake_pkt.session_id = session.session_id;
     quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
     log_info("CPS: fake QUIC packet sent");
 
     memset(&fake_pkt, 0, sizeof(fake_pkt));
     protocol_make_fake_dns(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
-    fake_pkt.session_id = htonll(session.session_id);
+    fake_pkt.session_id = session.session_id;
     quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
     log_info("CPS: fake DNS packet sent");
 
     memset(&fake_pkt, 0, sizeof(fake_pkt));
     protocol_make_fake_tls(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
-    fake_pkt.session_id = htonll(session.session_id);
+    fake_pkt.session_id = session.session_id;
     quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
     log_info("CPS: fake TLS packet sent");
 
-    /* Отправляем CPS challenge */
     gost_packet_t pkt;
     gost_packet_t cps_challenge;
     uint8_t cps_challenge_out[32] = {0}, cps_answer[32] = {0};
     memset(&cps_challenge, 0, sizeof(cps_challenge));
     protocol_make_cps_challenge(&cps_challenge, cps_seed, HEADER_SEED_SIZE,
                                  cps_challenge_out, cps_answer);
-    cps_challenge.session_id = htonll(session.session_id);
+    cps_challenge.session_id = session.session_id;
     quic_client_send(&quic_client, (const uint8_t*)&cps_challenge, sizeof(cps_challenge));
     log_info("CPS: challenge sent");
 
@@ -158,10 +155,6 @@ int main(int argc, char *argv[]) {
         log_info("CPS: no response received (non-critical)");
         printf("[SECURITY] CPS ответ не получен (не критично)\n");
     }
-
-    /* Инициализируем сессию с динамическими заголовками */
-    protocol_init_session(&session, expanded_key);
-    log_info("Session initialized with dynamic headers");
 
     /* Запускаем SOCKS5-прокси */
     printf("\n");
@@ -209,7 +202,7 @@ int main(int argc, char *argv[]) {
     memset(&disconnect, 0, sizeof(disconnect));
     disconnect.magic = htonl(GOST_PROXY_MAGIC);
     disconnect.type = PKT_DISCONNECT;
-    disconnect.session_id = htonll(session.session_id);
+    disconnect.session_id = session.session_id;
     quic_client_send(&quic_client, (const uint8_t*)&disconnect, sizeof(disconnect));
 
     log_info("Клиент завершается...");
@@ -228,7 +221,7 @@ static void* keepalive_thread(void *arg) {
         memset(&pkt, 0, sizeof(pkt));
         pkt.magic = htonl(GOST_PROXY_MAGIC);
         pkt.type = PKT_KEEPALIVE;
-        pkt.session_id = htonll(session.session_id);
+        pkt.session_id = session.session_id;
         ssize_t sent = quic_client_send(qc, (const uint8_t*)&pkt, sizeof(pkt));
         if (sent < 0) {
             log_debug("keepalive send failed: %s", strerror(errno));
