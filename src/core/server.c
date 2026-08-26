@@ -198,11 +198,11 @@ static int connect_to_target(const char *host, uint16_t port) {
 static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
                                const gost_packet_t *pkt, uint64_t session_id) {
     uint8_t decrypted[MAX_PAYLOAD]; size_t data_len; uint32_t pkt_conn_id = 0;
-    pthread_mutex_lock(&sessions_lock);
+    /* mutex уже захвачен в handle_packet */
     gost_session_t *session = find_session(session_id);
-    if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
-    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter, 0) != 0) { pthread_mutex_unlock(&sessions_lock); return; }
-    if (data_len < 1) { pthread_mutex_unlock(&sessions_lock); return; }
+    if (!session) { return; }
+    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter, 0) != 0) { return; }
+    if (data_len < 1) { return; }
     /* Сервер трактует все DATA-пакеты как данные туннеля.
      * CONNECT-запросы передаются как данные с префиксом:
      * [0]=0x01 (CONNECT), [1]=ATYP, далее адрес и порт.
@@ -232,11 +232,11 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
                 gost_packet_t err_pkt; memset(&err_pkt, 0, sizeof(err_pkt));
                 protocol_pack_data(&err_pkt, session_id, pkt_conn_id, err_data, 2, session->expanded_key, session->nonce, &session->counter, 1);
                 quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&err_pkt, sizeof(gost_packet_t));
-                pthread_mutex_unlock(&sessions_lock); return;
+                return;
             }
             pthread_mutex_lock(&proxy_lock);
             proxy_conn_t *conn = create_proxy_conn(session_id);
-            if (!conn) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); pthread_mutex_unlock(&sessions_lock); return; }
+            if (!conn) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); return; }
             conn->tcp_fd = tcp_fd; conn->session_id = session_id; conn->conn_id = pkt_conn_id;
             conn->client_addr = *client_addr; conn->addr_len = addr_len; conn->send_counter = 0;
             pthread_mutex_unlock(&proxy_lock);
@@ -245,11 +245,9 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
             gost_packet_t ok_pkt; memset(&ok_pkt, 0, sizeof(ok_pkt));
             protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2, session->expanded_key, session->nonce, &session->counter, 1);
             quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ok_pkt, sizeof(gost_packet_t));
-            pthread_mutex_unlock(&sessions_lock);
             return;
         }
     }
-    pthread_mutex_unlock(&sessions_lock);
     /* Проверяем, есть ли уже установленное соединение */
     pthread_mutex_lock(&proxy_lock);
     proxy_conn_t *conn = find_proxy_conn(session_id, pkt_conn_id);

@@ -7,6 +7,7 @@
 #include "gost_common.h"
 #include "protocol.h"
 #include "obfuscation.h"
+#include "log.h"
 
 static uint32_t prng_state;
 static void prng_seed_u64(uint64_t sv) { prng_state = (uint32_t)(sv ^ (sv >> 32)); if(prng_state==0) prng_state=0xDEADBEEF; }
@@ -33,6 +34,7 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     const uint8_t *data, size_t data_len, const uint8_t *ek, const uint8_t *nonce,
     uint32_t *counter, uint8_t obf_dir) {
     if(!pkt||!data||!ek||!nonce||!counter)return -1;
+    log_info("PACK_DATA: in_sid=%llu(0x%016llx), out_sid=0x%016llx", (unsigned long long)session_id, (unsigned long long)session_id, (unsigned long long)htonll(session_id));
     if(data_len>MAX_PAYLOAD-4-PADDING_MIN_BYTES)return -1;
     memset(pkt,0,sizeof(gost_packet_t));
     pkt->magic=htonl(GOST_PROXY_MAGIC); pkt->type=PKT_DATA;
@@ -63,7 +65,8 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
 }
 int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     uint32_t *oci, const uint8_t *ek, const uint8_t *nonce, uint32_t *ctr, uint8_t obf_dir) {
-    if(!pkt||!data||!dl||!ek||!nonce||!ctr)return -1;
+    log_info("protocol_unpack_data: START");
+    if(!pkt||!data||!dl||!ek||!nonce||!ctr){log_info("protocol_unpack_data: PARAM CHECK FAIL"); return -1;}
     if(oci)*oci=ntohl(pkt->conn_id);
     uint8_t deobf[MAX_PAYLOAD]; memcpy(deobf,pkt->payload,MAX_PAYLOAD);
     uint8_t obf_key[OBF_KEY_SIZE];

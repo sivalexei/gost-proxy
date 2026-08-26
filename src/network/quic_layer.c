@@ -124,8 +124,11 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
 }
 
 ssize_t quic_client_send(quic_client_t *qc, const uint8_t *data, size_t len) {
-    if (!qc || !qc->active || qc->server_fd < 0) return QUIC_ERROR;
-    /* Определяем адрес по наличию ':' в адресе */
+    if (!qc || !qc->active || qc->server_fd < 0) {
+        log_error("QUIC send: qc=%p active=%d fd=%d", qc, qc?qc->active:0, qc?qc->server_fd:-1);
+        return QUIC_ERROR;
+    }
+    log_info("QUIC send: fd=%d, len=%zu, addr=%s:%d", qc->server_fd, len, qc->server_addr, qc->server_port);
     struct sockaddr_storage srv;
     socklen_t srv_len = sizeof(srv);
     memset(&srv, 0, srv_len);
@@ -142,7 +145,8 @@ ssize_t quic_client_send(quic_client_t *qc, const uint8_t *data, size_t len) {
     }
     ssize_t sent = sendto(qc->server_fd, data, len, 0,
                           (struct sockaddr*)&srv, srv_len);
-    if (sent < 0) return QUIC_ERROR;
+    if (sent < 0) { log_error("QUIC sendto: %s", strerror(errno)); return QUIC_ERROR; }
+    log_info("QUIC send: sent %zd bytes", sent);
     return sent;
 }
 

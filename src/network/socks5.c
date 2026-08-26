@@ -34,16 +34,20 @@ static uint32_t *shared_ctr = NULL;
 static uint32_t next_cid = 1;
 
 static int tunnel_send(const uint8_t *data, size_t len, uint32_t cid, uint32_t *ctr) {
+    log_info("tunnel_send: len=%zu, cid=%u, quic=%p fd=%d", len, cid, proxy_quic, proxy_quic?proxy_quic->server_fd:-1);
     size_t off = 0;
     while (off < len) {
         size_t chunk = len - off;
-        if (chunk > MAX_PAYLOAD - 4) chunk = MAX_PAYLOAD - 4;
+        if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
         gost_packet_t pkt; memset(&pkt, 0, sizeof(pkt));
         if (protocol_pack_data(&pkt, proxy_session.session_id, cid, data+off, chunk,
-                              proxy_session.expanded_key, proxy_session.nonce, ctr, 0) != 0)
+                              proxy_session.expanded_key, proxy_session.nonce, ctr, 0) != 0) {
+            log_error("tunnel_send: protocol_pack_data failed");
             return -1;
-        if (quic_client_send(proxy_quic, (const uint8_t*)&pkt, sizeof(gost_packet_t)) < 0)
-            return -1;
+        }
+        ssize_t sent = quic_client_send(proxy_quic, (const uint8_t*)&pkt, sizeof(gost_packet_t));
+        log_info("tunnel_send: quic sent=%zd (chunk=%zu)", sent, chunk);
+        if (sent < 0) return -1;
         off += chunk;
     }
     return 0;
@@ -52,15 +56,20 @@ static int tunnel_send(const uint8_t *data, size_t len, uint32_t cid, uint32_t *
 static int tunnel_recv(uint8_t *out, size_t maxlen, int tmo, uint32_t ecid, uint32_t *ctr) {
     (void)maxlen;
     uint8_t buf[SOCKS5_BUF_SIZE];
+    log_info("tunnel_recv: tmo=%d, expect_cid=%u", tmo, ecid);
     ssize_t n = quic_client_recv(proxy_quic, buf, sizeof(buf), tmo);
+    log_info("tunnel_recv: quic returned %zd", n);
     if (n > 0 && n >= (ssize_t)sizeof(gost_packet_t)) {
         const gost_packet_t *pkt = (const gost_packet_t*)buf;
+        log_info("tunnel_recv: magic=0x%08x, type=%u, conn_id=%u", ntohl(pkt->magic), pkt->type, ntohl(pkt->conn_id));
         if (ntohl(pkt->magic)==GOST_PROXY_MAGIC && pkt->type==PKT_DATA) {
-            if (ntohl(pkt->conn_id)!=ecid) return -1;
+            if (ntohl(pkt->conn_id)!=ecid) { log_info("tunnel_recv: cid mismatch"); return -1; }
             size_t dl;
             if (protocol_unpack_data(pkt, out, &dl, NULL, proxy_session.expanded_key,
-                                    proxy_session.nonce, ctr, 0)==0)
+                                    proxy_session.nonce, ctr, 0)==0) {
+                log_info("tunnel_recv: unpacked %zu bytes", dl);
                 return (int)dl;
+            }
         }
     }
     return -1;
@@ -112,6 +121,7 @@ static void* socks5_client_thread(void *arg) {
     }
     log_info("SOCKS5 CONNECT %s:%u",th,tp);
     uint32_t mcid=__sync_fetch_and_add(&next_cid,1);
+    log_info("SOCKS5: sending CONNECT, session_id=%llu, cid=%u", (unsigned long long)proxy_session.session_id, mcid);
     struct in_addr ta;memset(&ta,0,sizeof(ta));
     /* Resolve */
     struct addrinfo hints={0},*res=NULL;hints.ai_family=AF_INET;hints.ai_socktype=SOCK_STREAM;
@@ -121,9 +131,14 @@ static void* socks5_client_thread(void *arg) {
     struct sockaddr_in *sin=(struct sockaddr_in*)res->ai_addr;ta=sin->sin_addr;freeaddrinfo(res);
     uint8_t cd[8];cd[0]=1;cd[1]=1;memcpy(&cd[2],&ta.s_addr,4);cd[6]=(uint8_t)(tp>>8);cd[7]=(uint8_t)tp;
     uint32_t csc=0;
-    if (tunnel_send(cd,8,mcid,&csc)!=0){uint8_t e[]={0x05,0x1,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;}
+    log_info("SOCKS5: calling tunnel_send, dlen=8, cid=%u", mcid);
+    int ts = tunnel_send(cd,8,mcid,&csc);
+    log_info("SOCKS5: tunnel_send returned %d", ts);
+    if (ts!=0){uint8_t e[]={0x05,0x1,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;}
     uint32_t crc=1; uint8_t resp[SOCKS5_BUF_SIZE];
+    log_info("SOCKS5: waiting for CONNECT response, mcid=%u", mcid);
     int rl=tunnel_recv(resp,sizeof(resp),5000,mcid,&crc);
+    log_info("SOCKS5: tunnel_recv returned %d", rl);
     if (rl<2||resp[0]!=0x02||resp[1]!=0x00){uint8_t e[]={0x05,0x5,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;}
     uint8_t rep[]={0x05,0,0,1,0,0,0,0,0,0};send(fd,rep,10,0);
     typedef struct { int fd; uint32_t cid; } parg_t;

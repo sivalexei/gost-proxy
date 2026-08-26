@@ -109,19 +109,19 @@ int main(int argc, char *argv[]) {
     gost_packet_t fake_pkt;
     memset(&fake_pkt, 0, sizeof(fake_pkt));
     protocol_make_fake_quic(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
-    fake_pkt.session_id = session.session_id;
+    fake_pkt.session_id = htonll(session.session_id);
     quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
     log_info("CPS: fake QUIC packet sent");
 
     memset(&fake_pkt, 0, sizeof(fake_pkt));
     protocol_make_fake_dns(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
-    fake_pkt.session_id = session.session_id;
+    fake_pkt.session_id = htonll(session.session_id);
     quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
     log_info("CPS: fake DNS packet sent");
 
     memset(&fake_pkt, 0, sizeof(fake_pkt));
     protocol_make_fake_tls(&fake_pkt, cps_seed, HEADER_SEED_SIZE);
-    fake_pkt.session_id = session.session_id;
+    fake_pkt.session_id = htonll(session.session_id);
     quic_client_send(&quic_client, (const uint8_t*)&fake_pkt, sizeof(fake_pkt));
     log_info("CPS: fake TLS packet sent");
 
@@ -131,7 +131,7 @@ int main(int argc, char *argv[]) {
     memset(&cps_challenge, 0, sizeof(cps_challenge));
     protocol_make_cps_challenge(&cps_challenge, cps_seed, HEADER_SEED_SIZE,
                                  cps_challenge_out, cps_answer);
-    cps_challenge.session_id = session.session_id;
+    cps_challenge.session_id = htonll(session.session_id);
     quic_client_send(&quic_client, (const uint8_t*)&cps_challenge, sizeof(cps_challenge));
     log_info("CPS: challenge sent");
 
@@ -202,7 +202,7 @@ int main(int argc, char *argv[]) {
     memset(&disconnect, 0, sizeof(disconnect));
     disconnect.magic = htonl(GOST_PROXY_MAGIC);
     disconnect.type = PKT_DISCONNECT;
-    disconnect.session_id = session.session_id;
+    disconnect.session_id = htonll(session.session_id);
     quic_client_send(&quic_client, (const uint8_t*)&disconnect, sizeof(disconnect));
 
     log_info("Клиент завершается...");
@@ -221,7 +221,7 @@ static void* keepalive_thread(void *arg) {
         memset(&pkt, 0, sizeof(pkt));
         pkt.magic = htonl(GOST_PROXY_MAGIC);
         pkt.type = PKT_KEEPALIVE;
-        pkt.session_id = session.session_id;
+        pkt.session_id = htonll(session.session_id);
         ssize_t sent = quic_client_send(qc, (const uint8_t*)&pkt, sizeof(pkt));
         if (sent < 0) {
             log_debug("keepalive send failed: %s", strerror(errno));

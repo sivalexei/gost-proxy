@@ -11,7 +11,7 @@
 /* Byte-swap для 64-бит (нет в glibc) */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     #define htonll(x) (((uint64_t)htonl((uint32_t)((x) >> 32))) | \
-                        ((uint64_t)htonl((uint32_t)(x)) << 32))
+                        (((uint64_t)htonl((uint32_t)(x))) << 32))
     #define ntohll(x) htonll(x)
 #else
     #define htonll(x) (x)
