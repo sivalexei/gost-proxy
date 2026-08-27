@@ -5,10 +5,13 @@
 #include "kuznyechik.h"
 #include "obfuscation.h"
 
-/* Вычисление длины padding для пакета */
-uint32_t protocol_compute_padding(uint64_t session_id, uint32_t seed_len);
+/* Вычисление длины padding для сессии */
+uint32_t protocol_compute_padding_len(uint64_t session_id);
 
-/* Вставка случайного padding в payload */
+/* Инициализация PRNG (вызвать один раз при старте) */
+void protocol_prng_init(void);
+
+/* Вставка случайного padding в payload (ПОСЛЕ данных) */
 void protocol_insert_padding(uint8_t *payload, uint32_t *data_len,
                               uint32_t padding_len, uint64_t session_id);
 

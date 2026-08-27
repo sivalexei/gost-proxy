@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+#include <sys/random.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,20 +12,69 @@
 #include "log.h"
 
 static uint32_t prng_state;
-static void prng_seed_u64(uint64_t sv) { prng_state = (uint32_t)(sv ^ (sv >> 32)); if(prng_state==0) prng_state=0xDEADBEEF; }
-static uint32_t prng_next(void) { uint32_t x=prng_state; x^=x<<13; x^=x>>17; x^=x<<5; prng_state=x; return x; }
+static int prng_initialized = 0;
+static void prng_init(void) {
+    uint32_t rnd;
+    ssize_t nr = getrandom(&rnd, sizeof(rnd), 0);
+    if (nr < 0) { rnd = (uint32_t)time(NULL) ^ ((uint32_t)(uintptr_t)&prng_init); }
+    prng_state = rnd;
+    if (prng_state == 0) prng_state = 0xDEADBEEF;
+    prng_initialized = 1;
+}
+static void prng_seed_u64(uint64_t sv) {
+    if (!prng_initialized) prng_init();
+    prng_state = (uint32_t)(sv ^ (sv >> 32) ^ prng_state);
+    if (prng_state == 0) prng_state = 0xDEADBEEF;
+}
+static uint32_t prng_next(void) {
+    uint32_t x = prng_state;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    prng_state = x;
+    return x;
+}
 
-uint32_t protocol_compute_padding(uint64_t sid, uint32_t sl) { (void)sl; prng_seed_u64(sid); return PADDING_MIN_BYTES+(prng_next()%(PADDING_MAX_BYTES-PADDING_MIN_BYTES+1)); }
-void protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t pl, uint64_t sid) {
-    if(!pl)return; prng_seed_u64(sid); uint32_t sp=pl/2, l=sp, r=pl-sp; size_t t=*dl+pl;
-    if(t>MAX_PAYLOAD-4){t=MAX_PAYLOAD-4;r=(t>*dl)?t-*dl:0;l=pl-r;}
-    if(l>MAX_PAYLOAD-4-*dl)l=MAX_PAYLOAD-4-*dl; memmove(p+l,p,*dl);
-    for(uint32_t i=0;i<l;i++)p[i]=(uint8_t)prng_next();
-    for(uint32_t i=0;i<r;i++)p[l+*dl+i]=(uint8_t)prng_next();
-    *dl+=pl;
+uint32_t protocol_compute_padding_len(uint64_t sid) {
+    /* Фиксированная длина padding для сессии */
+    prng_seed_u64(sid);
+    return PADDING_MIN_BYTES + (prng_next() % (PADDING_MAX_BYTES - PADDING_MIN_BYTES + 1));
+}
+
+void protocol_prng_init(void) {
+    /* Инициализация PRNG один раз при запуске из getrandom */
+    uint32_t rnd;
+    ssize_t nr = getrandom(&rnd, sizeof(rnd), 0);
+    if (nr < 0) rnd = (uint32_t)time(NULL) ^ ((uint32_t)(uintptr_t)&rnd);
+    prng_state = rnd;
+    if (prng_state == 0) prng_state = 0xDEADBEEF;
+    prng_initialized = 1;
+}
+
+void protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len, uint64_t sid) {
+    if (padding_len == 0) return;
+    size_t t = (size_t)(*dl) + padding_len;
+    if (t > MAX_PAYLOAD - 4) {
+        padding_len = (uint32_t)(MAX_PAYLOAD - 4 - (size_t)(*dl));
+        if (padding_len == 0) return;
+    }
+    prng_seed_u64(sid);
+    /* Вставляем padding ПОСЛЕ данных, не перед ними */
+    memmove(p + 8 + (*dl) + padding_len, p + 8, (size_t)(*dl));
+    for (uint32_t i = 0; i < padding_len; i++)
+        p[8 + (*dl) + i] = (uint8_t)prng_next();
+    *dl += padding_len;
 }
 static void compute_mac(const uint8_t *pay, size_t plen, const uint8_t *ek, uint8_t *mac) {
     uint8_t b[16]; memset(b,0,16);
+    /* Включаем длину в MAC: XOR-им старшие 8 байт с plen */
+    uint64_t plen_u64 = plen;
+    b[0] ^= (uint8_t)(plen_u64 >> 56);
+    b[1] ^= (uint8_t)(plen_u64 >> 48);
+    b[2] ^= (uint8_t)(plen_u64 >> 40);
+    b[3] ^= (uint8_t)(plen_u64 >> 32);
+    b[4] ^= (uint8_t)(plen_u64 >> 24);
+    b[5] ^= (uint8_t)(plen_u64 >> 16);
+    b[6] ^= (uint8_t)(plen_u64 >> 8);
+    b[7] ^= (uint8_t)plen_u64;
     for(size_t o=0;o<plen;o+=16){size_t bl=(plen-o>16)?16:(plen-o);for(size_t i=0;i<bl;i++)b[i]^=pay[o+i];}
     memcpy(mac,b,16); kuznyechik_encrypt_block(mac,ek);
 }
@@ -42,7 +93,7 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     (*counter)+=2; uint32_t pc=*counter;
     pkt->payload[0]=(pc>>24)&0xFF;pkt->payload[1]=(pc>>16)&0xFF;
     pkt->payload[2]=(pc>>8)&0xFF;pkt->payload[3]=pc&0xFF;
-    uint32_t plen=protocol_compute_padding(session_id,0);
+    uint32_t plen=protocol_compute_padding_len(session_id);
     memcpy(pkt->payload+8,data,data_len); uint32_t pdl=(uint32_t)data_len;
     uint32_t tl=pdl+plen;
     pkt->payload[4]=(tl>>24)&0xFF;pkt->payload[5]=(tl>>16)&0xFF;

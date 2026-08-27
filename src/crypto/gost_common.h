@@ -84,6 +84,7 @@ typedef struct {
     uint32_t counter;
     uint32_t last_counter;    /* последний принятый counter (для replay protection) */
     int      active;
+    int      next_slot;       /* индекс следующей сессии в цепочке хеша */
     /* Динамические заголовки */
     uint8_t  header_seed[HEADER_SEED_SIZE];
     uint8_t  header_perm[HEADER_FIELD_COUNT]; /* perестановка полей */

@@ -73,16 +73,34 @@ static proxy_conn_t proxy_conns[MAX_PROXY_CONNS];
 static pthread_mutex_t proxy_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static inline uint32_t session_hash_func(uint64_t sid) { return (uint32_t)(sid % SESSION_HASH_SIZE); }
-static inline void session_hash_add(uint64_t sid, int idx) { session_hash[session_hash_func(sid)] = idx; }
-static inline void session_hash_remove(uint64_t sid) { session_hash[session_hash_func(sid)] = -1; }
 
-/* Удаление сессии по индексу — переиспользование слотов */
+static inline void session_hash_add(uint64_t sid, int idx) {
+    uint32_t h = session_hash_func(sid);
+    sessions[idx].next_slot = session_hash[h];
+    session_hash[h] = idx;
+}
+
+static inline void session_hash_remove(uint64_t sid, int idx) {
+    uint32_t h = session_hash_func(sid);
+    int prev = -1;
+    for (int cur = session_hash[h]; cur != -1; cur = sessions[cur].next_slot) {
+        if (cur == idx) {
+            if (prev == -1) session_hash[h] = sessions[idx].next_slot;
+            else sessions[prev].next_slot = sessions[idx].next_slot;
+            return;
+        }
+        prev = cur;
+    }
+}
+
+/* Удаление сессии по индексу */
 static void session_remove(int idx) {
     if (idx < 0 || idx >= max_sessions) return;
-    uint64_t sid = sessions[idx].session_id;
-    session_hash_remove(sid);
+    if (sessions[idx].session_id != 0)
+        session_hash_remove(sessions[idx].session_id, idx);
     sessions[idx].active = 0;
     sessions[idx].session_id = 0;
+    sessions[idx].next_slot = -1;
     memset(sessions[idx].nonce, 0, NONCE_SIZE);
 }
 
@@ -97,9 +115,14 @@ static inline void session_reset_free_slot(void) {
     }
 }
 static void signal_handler(int sig) { (void)sig; running = 0; }
+
+/* Поиск сессии с цепочками */
 static inline gost_session_t* find_session_by_id(uint64_t sid) {
-    int idx = session_hash[session_hash_func(sid)];
-    if (idx >= 0 && idx < max_sessions && sessions[idx].active && sessions[idx].session_id == sid) return &sessions[idx];
+    uint32_t h = session_hash_func(sid);
+    for (int idx = session_hash[h]; idx != -1; idx = sessions[idx].next_slot) {
+        if (idx >= 0 && idx < max_sessions && sessions[idx].active && sessions[idx].session_id == sid)
+            return &sessions[idx];
+    }
     return NULL;
 }
 static gost_session_t* find_session(uint64_t sid) { return find_session_by_id(sid); }
@@ -283,6 +306,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
 
             /* Сравниваем первые 4 байта auth_tag с ожидаемыми */
             if (memcmp(hs_pkt->auth_tag, temp_block, 4) != 0) {
+                log_warn("  auth_tag=%02x%02x%02x%02x, expected=%02x%02x%02x%02x, client_sid=%016llx", hs_pkt->auth_tag[0],hs_pkt->auth_tag[1],hs_pkt->auth_tag[2],hs_pkt->auth_tag[3], temp_block[0],temp_block[1],temp_block[2],temp_block[3], (unsigned long long)client_sid);
                 log_warn("HANDSHAKE auth failed from %s", inet_ntoa(client_addr->sin_addr));
                 break;  /* аутентификация не пройдена — отклоняем */
             }
@@ -376,6 +400,7 @@ int main(int argc, char *argv[]) {
     if (config_load(&cfg, config_path) == 0) printf("[CONFIG] Loaded: %s\n", config_path);
     else printf("[CONFIG] Default config\n");
     log_init(cfg.log_level, cfg.log_file);
+    protocol_prng_init();
     printf("=== ГОСТ Прокси-Сервер ===\n");
     printf("Address: %s:%d\n", cfg.bind_addr, cfg.port);
     signal(SIGPIPE, SIG_IGN);
@@ -392,11 +417,19 @@ int main(int argc, char *argv[]) {
         unsigned int byte; sscanf(&cfg.key[i*2], "%2x", &byte); server_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(server_key, expanded_key);
+
+    /* Инициализация сессий с хеш-таблицей и цепочками */
     max_sessions = cfg.max_sessions;
     sessions = calloc(max_sessions, sizeof(gost_session_t));
     if (!sessions) { perror("calloc"); return 1; }
     memset(session_hash, -1, sizeof(session_hash));
+    for (int i = 0; i < max_sessions; i++) {
+        sessions[i].active = 0;
+        sessions[i].session_id = 0;
+        sessions[i].next_slot = -1;
+    }
     atomic_store(&free_slot_next, 0);
+
     memset(proxy_conns, 0, sizeof(proxy_conns));
     quic_server_t qs;
     memset(&qs, 0, sizeof(qs));
