@@ -15,3 +15,7 @@ rpmbuild/SRPMS/
 .vscode/
 *.swp
 *.swo
+
+# Log files
+*.log
+gost-proxy-*.log

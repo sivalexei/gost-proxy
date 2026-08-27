@@ -48,7 +48,13 @@ extern ssize_t tcp_write_all(int fd, const void *buf, size_t len);
 
 #define BUFFER_SIZE 2048
 #define DEFAULT_CONFIG "/etc/gost-proxy/server.json"
+#define DEFAULT_LOG_FILE "./gost-proxy-server.log"
 #define MAX_PROXY_CONNS 256
+#define MAX_HS_PER_IP 10   /* max handshake attempts per IP per 60s */
+#define HS_WINDOW 60       /* rate limit window in seconds */
+
+/* Глобальный указатель на UDP-сокет сервера (для reuse в tcp_to_udp_thread) */
+static quic_server_t *qs_global = NULL;
 
 static volatile int running = 1;
 static gost_session_t *sessions;
@@ -128,6 +134,68 @@ static void expire_sessions(void) {
     }
     session_reset_free_slot();
 }
+
+/* Forward declarations */
+static void expire_hs_rates(time_t now);
+
+/* Rate limiting handshake: считаем попытки с одного IP */
+typedef struct {
+    struct sockaddr_in addr;
+    int count;
+    time_t window_start;
+} hs_rate_t;
+static hs_rate_t hs_rates[MAX_PROXY_CONNS];
+
+static int check_handshake_rate(const struct sockaddr_in *addr) {
+    time_t now = time(NULL);
+    /* Ищем запись для этого IP */
+    for (int i = 0; i < MAX_PROXY_CONNS; i++) {
+        if (hs_rates[i].addr.sin_addr.s_addr == 0) {
+            /* Свободная запись — создаём */
+            hs_rates[i].addr = *addr;
+            hs_rates[i].count = 1;
+            hs_rates[i].window_start = now;
+            return 0; /* разрешаем */
+        }
+        if (hs_rates[i].addr.sin_addr.s_addr == addr->sin_addr.s_addr) {
+            if (now - hs_rates[i].window_start > HS_WINDOW) {
+                /* Окно истекло — сбрасываем */
+                hs_rates[i].count = 1;
+                hs_rates[i].window_start = now;
+                return 0;
+            }
+            hs_rates[i].count++;
+            if (hs_rates[i].count > cfg.rate_limit) {
+                log_warn("Rate limit exceeded: %d handshakes from %s", hs_rates[i].count,
+                         inet_ntoa(addr->sin_addr));
+                return -1; /* отклоняем */
+            }
+            return 0;
+        }
+    }
+    /* Все записи заняты — чистим старые и добавляем */
+    expire_hs_rates(now);
+    for (int i = 0; i < MAX_PROXY_CONNS; i++) {
+        if (hs_rates[i].addr.sin_addr.s_addr == 0) {
+            hs_rates[i].addr = *addr;
+            hs_rates[i].count = 1;
+            hs_rates[i].window_start = now;
+            return 0;
+        }
+    }
+    return 0; /* нет записей — разрешаем (редкий случай) */
+}
+
+/* Внутренняя функция expire_hs_rates (см. forward declaration) */
+static void expire_hs_rates(time_t now) {
+    for (int i = 0; i < MAX_PROXY_CONNS; i++) {
+        if (hs_rates[i].addr.sin_addr.s_addr != 0 &&
+            now - hs_rates[i].window_start > HS_WINDOW) {
+            hs_rates[i].addr.sin_addr.s_addr = 0;
+            hs_rates[i].count = 0;
+        }
+    }
+}
 static void signal_handler(int sig) { (void)sig; running = 0; }
 
 /* Поиск сессии с цепочками */
@@ -182,16 +250,6 @@ static proxy_conn_t* create_proxy_conn(uint64_t sid) {
 static void* tcp_to_udp_thread(void *arg) {
     proxy_conn_t *conn = (proxy_conn_t *)arg;
     uint8_t buf[BUFFER_SIZE];
-    quic_server_t qs; memset(&qs, 0, sizeof(qs));
-    qs.server_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (qs.server_fd < 0) { conn->active = 0; return NULL; }
-    int opt = 1;
-    setsockopt(qs.server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    int bs = 1024*1024;
-    setsockopt(qs.server_fd, SOL_SOCKET, SO_RCVBUF, &bs, sizeof(bs));
-    setsockopt(qs.server_fd, SOL_SOCKET, SO_SNDBUF, &bs, sizeof(bs));
-    fcntl(qs.server_fd, F_SETFL, fcntl(qs.server_fd, F_GETFL, 0) | O_NONBLOCK);
-    qs.active = 1;
     while (running && conn->active) {
         struct pollfd pfd = { .fd = conn->tcp_fd, .events = POLLIN };
         int ret = poll(&pfd, 1, 1000);
@@ -206,14 +264,14 @@ static void* tcp_to_udp_thread(void *arg) {
                 if (chunk > MAX_PAYLOAD - 4) chunk = MAX_PAYLOAD - 4;
                 gost_packet_t pkt;
                 if (protocol_pack_data(&pkt, conn->session_id, conn->conn_id, buf + off, chunk, session->expanded_key, session->nonce, &conn->send_counter, 1) == 0) {
-                    quic_server_send(&qs, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
+                    /* Отправляем через тот же UDP-сокет сервера (port reuse) */
+                    quic_server_send(qs_global, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
                 }
                 off += chunk;
             }
         } else if (ret < 0 && errno != EINTR) { break; }
     }
     if (conn->tcp_fd >= 0) close(conn->tcp_fd);
-    if (qs.server_fd >= 0) close(qs.server_fd);
     conn->active = 0; return NULL;
 }
 static int connect_to_target(const char *host, uint16_t port) {
@@ -309,6 +367,9 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
     pthread_mutex_lock(&sessions_lock);
     switch (pkt->type) {
         case PKT_HANDSHAKE: {
+            /* Rate limiting: отклоняем слишком частые рукопожатия с одного IP */
+            expire_hs_rates(time(NULL));
+            if (check_handshake_rate(client_addr) != 0) { break; }
             /* Проверка HMAC-подписи handshake (аутентификация клиента) */
             if (len < sizeof(gost_packet_t) - AUTH_TAG_SIZE + 4) {
                 log_debug("HANDSHAKE: too short for auth (%zu)", len); break;
@@ -417,6 +478,10 @@ int main(int argc, char *argv[]) {
     config_defaults(&cfg);
     if (config_load(&cfg, config_path) == 0) printf("[CONFIG] Loaded: %s\n", config_path);
     else printf("[CONFIG] Default config\n");
+    /* Лог по умолчанию в текущую директорию (не /var/log/, если файл не задан) */
+    if (cfg.log_file[0] == '\0' || strcmp(cfg.log_file, "/var/log/gost-proxy/server.log") == 0) {
+        strncpy(cfg.log_file, DEFAULT_LOG_FILE, sizeof(cfg.log_file));
+    }
     log_init(cfg.log_level, cfg.log_file);
     protocol_prng_init();
     printf("=== ГОСТ Прокси-Сервер ===\n");
@@ -429,8 +494,19 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[ERROR] Ключ не задан! Используйте GOST_PROXY_KEY или поле 'key' в JSON\n");
         return 1;
     }
-    uint8_t server_key[32] = {0};
+    /* Валидация hex-ключа: ровно 64 символа [0-9a-fA-F] */
     size_t key_len = strlen(cfg.key);
+    if (key_len != 64) {
+        fprintf(stderr, "[ERROR] Длина ключа: %zu (ожидалось 64 hex-символа = 32 байта)\n", key_len);
+        return 1;
+    }
+    for (size_t i = 0; i < key_len; i++) {
+        if (!isxdigit((unsigned char)cfg.key[i])) {
+            fprintf(stderr, "[ERROR] Некорректный hex-символ в ключе на позиции %zu: '%c'\n", i, cfg.key[i]);
+            return 1;
+        }
+    }
+    uint8_t server_key[32] = {0};
     for (size_t i = 0; i < key_len/2 && i < 32; i++) {
         unsigned int byte; sscanf(&cfg.key[i*2], "%2x", &byte); server_key[i] = (uint8_t)byte;
     }
@@ -470,6 +546,7 @@ int main(int argc, char *argv[]) {
     printf("[SERVER] Listening on %s:%d...\n", cfg.bind_addr, cfg.port);
     log_info("Server started on %s:%d", cfg.bind_addr, cfg.port);
     qs.active = 1;
+    qs_global = &qs;  /* для reuse UDP-сокета в tcp_to_udp_thread */
     pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs);
     while (running) sleep(1);
     log_info("Server exiting...");

@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sys/random.h>
+#include <ctype.h>
 
 #include "quic_layer.h"
 #include "kuznyechik.h"
@@ -53,6 +54,10 @@ int main(int argc, char *argv[]) {
 
     printf("[DEBUG] cfg.key='%s' (len=%zu)\n", cfg.key, strlen(cfg.key));
 
+    /* Лог по умолчанию в текущую директорию */
+    if (cfg.log_file[0] == '\0' || strcmp(cfg.log_file, "/var/log/gost-proxy/client.log") == 0) {
+        strncpy(cfg.log_file, "./gost-proxy-client.log", sizeof(cfg.log_file));
+    }
     /* Инициализация логирования */
     log_init(cfg.log_level, cfg.log_file);
 
@@ -68,6 +73,18 @@ int main(int argc, char *argv[]) {
         unsigned int byte;
         sscanf(&cfg.key[i*2], "%2x", &byte);
         client_key[i] = (uint8_t)byte;
+    }
+    /* Валидация hex-ключа клиента: ровно 64 символа */
+    size_t key_len = strlen(cfg.key);
+    if (key_len != 64) {
+        fprintf(stderr, "[ERROR] Длина ключа: %zu (ожидалось 64)\n", key_len);
+        return 1;
+    }
+    for (size_t i = 0; i < key_len; i++) {
+        if (!isxdigit((unsigned char)cfg.key[i])) {
+            fprintf(stderr, "[ERROR] Некорректный hex-символ на позиции %zu\n", i);
+            return 1;
+        }
     }
     kuznyechik_set_key(client_key, expanded_key);
     printf("[DEBUG] client key: %02x%02x%02x%02x...%02x%02x\n", client_key[0],client_key[1],client_key[2],client_key[3], client_key[30],client_key[31]);

@@ -11,7 +11,7 @@ typedef struct {
     int      max_sessions;
     int      session_timeout;
     int      rate_limit;
-    char     key[64];
+    char     key[128];  /* hex-key: 64 символа = 32 байт + запас */
     char     log_level[16];
     char     log_file[256];
 } gost_config_t;
