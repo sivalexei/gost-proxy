@@ -143,12 +143,14 @@ static int tunnel_recv(uint8_t *out, size_t maxlen, int tmo, uint32_t ecid, uint
     if (!out || !ctr || maxlen < 1) return -1;
     gost_packet_t pkt;
     int n = queue_pop(queue_get(ecid), &pkt, tmo);
+    log_info("tunnel_recv: queue_pop returned %d, cid=%u, magic=%u, type=%u, conn_id=%u", n, ecid, ntohl(pkt.magic), pkt.type, ntohl(pkt.conn_id));
     if (n > 0) {
         if (ntohl(pkt.magic)==GOST_PROXY_MAGIC && pkt.type==PKT_DATA && ntohl(pkt.conn_id)==ecid) {
             size_t dl;
             if (protocol_unpack_data(&pkt, out, &dl, NULL, proxy_session.expanded_key,
                                     proxy_session.nonce, ctr, 0)==0) {
                 if (dl > maxlen) dl = maxlen;
+                log_info("tunnel_recv: unpacked %zu bytes", dl);
                 return (int)dl;
             }
         }

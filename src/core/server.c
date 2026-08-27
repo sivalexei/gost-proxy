@@ -74,6 +74,7 @@ typedef struct {
     socklen_t addr_len;
     int      active;
     uint32_t send_counter;
+    int      connect_fd;  /* fd для async connect (отдельно от tcp_fd) */
 } proxy_conn_t;
 static proxy_conn_t proxy_conns[MAX_PROXY_CONNS];
 static pthread_mutex_t proxy_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -274,32 +275,39 @@ static void* tcp_to_udp_thread(void *arg) {
     if (conn->tcp_fd >= 0) close(conn->tcp_fd);
     conn->active = 0; return NULL;
 }
+/* Синхронный connect для CONNECT-запросов (клиент ждёт ответ <=5с) */
 static int connect_to_target(const char *host, uint16_t port) {
     struct addrinfo hints = {0}, *result;
     hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
     char ps[8]; snprintf(ps, sizeof(ps), "%u", port);
-    if (getaddrinfo(host, ps, &hints, &result) != 0) { log_error("getaddrinfo %s:%u", host, port); return -1; }
+    if (getaddrinfo(host, ps, &hints, &result) != 0) {
+        log_error("getaddrinfo %s:%u", host, port); return -1;
+    }
     int fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (fd < 0) { freeaddrinfo(result); return -1; }
+    if (fd < 0) { freeaddrinfo(result); log_error("socket: %s", strerror(errno)); return -1; }
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     int flag = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
     struct timeval tv = { .tv_sec = 5 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     if (connect(fd, result->ai_addr, result->ai_addrlen) < 0) {
         log_error("connect %s:%u: %s", host, port, strerror(errno));
         close(fd); freeaddrinfo(result); return -1;
     }
     freeaddrinfo(result); log_info("TCP %s:%u", host, port); return fd;
 }
+
 static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
                                const gost_packet_t *pkt, uint64_t session_id) {
     uint8_t decrypted[MAX_PAYLOAD]; size_t data_len = 0; uint32_t pkt_conn_id = 0;
     /* mutex уже захвачен в handle_packet */
     gost_session_t *session = find_session(session_id);
-    if (!session) { return; }
+    if (!session) { log_warn("handle_data_packet: session not found, sid=%llu", (unsigned long long)session_id); return; }
     session->last_activity = time(NULL);
-    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key,
-                             session->nonce, &session->counter, 0) != 0) { return; }
+    int up = protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key,
+                             session->nonce, &session->counter, 0);
+    if (up != 0) { log_debug("handle_data_packet: unpack failed, sid=%llu cid=%u", (unsigned long long)session_id, pkt_conn_id); return; }
     if (data_len < 1) { return; }
     /* Сервер трактует все DATA-пакеты как данные туннеля.
      * CONNECT-запросы передаются как данные с префиксом:
@@ -324,6 +332,7 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
         }
         if (target_host[0] && target_port > 0) {
             log_info("CONNECT %s:%u (cid=%u)", target_host, target_port, pkt_conn_id);
+            /* Синхронный connect: клиент ждёт OK в течение 5с */
             int tcp_fd = connect_to_target(target_host, target_port);
             if (tcp_fd < 0) {
                 uint8_t err_data[] = { 0x02, 0x01 };
@@ -336,13 +345,16 @@ static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *clie
             proxy_conn_t *conn = create_proxy_conn(session_id);
             if (!conn) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); return; }
             conn->tcp_fd = tcp_fd; conn->session_id = session_id; conn->conn_id = pkt_conn_id;
-            conn->client_addr = *client_addr; conn->addr_len = addr_len; conn->send_counter = 0;
+            conn->client_addr = *client_addr; conn->addr_len = addr_len;
+            conn->send_counter = 0; conn->connect_fd = -1;
             pthread_mutex_unlock(&proxy_lock);
-            pthread_t thread; pthread_create(&thread, NULL, tcp_to_udp_thread, conn); pthread_detach(thread);
+            /* Запускаем tcp_to_udp_thread и шлём OK */
+            pthread_t wthread; pthread_create(&wthread, NULL, tcp_to_udp_thread, conn); pthread_detach(wthread);
             uint8_t ok_data[] = { 0x02, 0x00 };
             gost_packet_t ok_pkt; memset(&ok_pkt, 0, sizeof(ok_pkt));
             protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2, session->expanded_key, session->nonce, &session->counter, 1);
             quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ok_pkt, sizeof(gost_packet_t));
+            log_info("CONNECT OK cid=%u fd=%d", pkt_conn_id, tcp_fd);
             return;
         }
     }
@@ -547,13 +559,15 @@ int main(int argc, char *argv[]) {
     log_info("Server started on %s:%d", cfg.bind_addr, cfg.port);
     qs.active = 1;
     qs_global = &qs;  /* для reuse UDP-сокета в tcp_to_udp_thread */
+    /* Запускаем UDP-сервер */
     pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs);
+
     while (running) sleep(1);
     log_info("Server exiting...");
-    /* Graceful shutdown: shutdown() пробуждает阻塞的 recvfrom */
+    /* Graceful shutdown */
     shutdown(qs.server_fd, SHUT_RDWR);
     qs.active = 0; close(qs.server_fd);
-    /* Ждём завершения потока с таймаутом */
+    /* Ждём завершения потока */
     for (int i = 0; i < 10 && pthread_kill(thread, 0) == 0; i++) sleep(1);
     pthread_cancel(thread); pthread_join(thread, NULL);
     /* Отключаем все сессии */

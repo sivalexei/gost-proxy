@@ -83,7 +83,7 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     const uint8_t *data, size_t data_len, const uint8_t *ek, const uint8_t *nonce,
     uint32_t *counter, uint8_t obf_dir) {
     if(!pkt||!data||!ek||!nonce||!counter)return -1;
-    log_info("PACK_DATA: in_sid=%llu(0x%016llx), out_sid=0x%016llx", (unsigned long long)session_id, (unsigned long long)session_id, (unsigned long long)htonll(session_id));
+    log_info("PACK_DATA: sid=%llu(0x%016llx), dlen=%zu, obf_dir=%u", (unsigned long long)session_id, (unsigned long long)session_id, (unsigned long long)data_len, obf_dir);
     if(data_len>MAX_PAYLOAD-4-PADDING_MIN_BYTES)return -1;
     memset(pkt,0,sizeof(gost_packet_t));
     pkt->magic=htonl(GOST_PROXY_MAGIC); pkt->type=PKT_DATA;
@@ -116,7 +116,7 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     uint32_t *oci, const uint8_t *ek, const uint8_t *nonce, uint32_t *ctr, uint8_t obf_dir) {
     log_info("protocol_unpack_data: START");
     if(!pkt||!data||!dl||!ek||!nonce||!ctr){log_info("protocol_unpack_data: PARAM CHECK FAIL"); return -1;}
-    if(oci)*oci=ntohl(pkt->conn_id);
+    log_debug("protocol_unpack_data: params OK");
     uint8_t deobf[MAX_PAYLOAD]; memcpy(deobf,pkt->payload,MAX_PAYLOAD);
     uint8_t obf_key[OBF_KEY_SIZE];
     obf_key_derive(ntohll(pkt->session_id),obf_dir,obf_key);
@@ -129,13 +129,13 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     hdr[13]=(h2>>48)&0xFF;hdr[14]=(h2>>40)&0xFF;hdr[15]=(h2>>32)&0xFF;
     deobfuscate_payload(deobf,MAX_PAYLOAD-2*AUTH_TAG_SIZE,hdr,obf_key);
     uint32_t pc=((uint32_t)deobf[0]<<24)|((uint32_t)deobf[1]<<16)|((uint32_t)deobf[2]<<8)|(uint32_t)deobf[3];
-    if(*ctr!=0&&pc<=*ctr)return -1;
+    if(*ctr!=0&&pc<=*ctr){log_info("protocol_unpack_data: COUNTER FAIL pc=%u ctr=%u",pc,*ctr); return -1;}
     uint32_t tl=((uint32_t)deobf[4]<<24)|((uint32_t)deobf[5]<<16)|((uint32_t)deobf[6]<<8)|(uint32_t)deobf[7];
-    if(tl>MAX_PAYLOAD-4||tl<8)return -1;
+    if(tl>MAX_PAYLOAD-4||tl<8){log_info("protocol_unpack_data: LEN FAIL tl=%u",tl); return -1;}
     uint8_t emac[AUTH_TAG_SIZE]; compute_mac(deobf,8+tl,ek,emac);
-    if(memcmp(pkt->auth_tag,emac,AUTH_TAG_SIZE)!=0)return -1;
+    if(memcmp(pkt->auth_tag,emac,AUTH_TAG_SIZE)!=0){log_info("protocol_unpack_data: MAC FAIL"); return -1;}
     uint32_t rl=tl-8; *dl=rl; memcpy(data,deobf+8,rl); *ctr=pc;
-    return 0;
+    log_info("protocol_unpack_data: OK, len=%u",rl); return 0;
 }
 int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uint8_t *ek) {
     if(!pkt||!ek)return -1;
