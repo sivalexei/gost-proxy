@@ -22,7 +22,10 @@ static void prng_init(void) {
     prng_initialized = 1;
 }
 static void prng_seed_u64(uint64_t sv) {
-    if (!prng_initialized) prng_init();
+    if (!prng_initialized) {
+        prng_init();
+        prng_initialized = 0; /* прудет прng_init() */
+    }
     prng_state = (uint32_t)(sv ^ (sv >> 32) ^ prng_state);
     if (prng_state == 0) prng_state = 0xDEADBEEF;
 }
@@ -41,12 +44,7 @@ uint32_t protocol_compute_padding_len(uint64_t sid) {
 
 void protocol_prng_init(void) {
     /* Инициализация PRNG один раз при запуске из getrandom */
-    uint32_t rnd;
-    ssize_t nr = getrandom(&rnd, sizeof(rnd), 0);
-    if (nr < 0) rnd = (uint32_t)time(NULL) ^ ((uint32_t)(uintptr_t)&rnd);
-    prng_state = rnd;
-    if (prng_state == 0) prng_state = 0xDEADBEEF;
-    prng_initialized = 1;
+    prng_init();
 }
 
 void protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len, uint64_t sid) {

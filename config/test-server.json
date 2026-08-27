@@ -1,0 +1,10 @@
+{
+  "bind": "0.0.0.0",
+  "port": 10443,
+  "max_sessions": 256,
+  "session_timeout": 300,
+  "rate_limit": 1000,
+  "key": "0000000000000000000000000000000000000000000000000000000000000000",
+  "log_level": "info",
+  "log_file": "/var/log/gost-proxy/server.log"
+}

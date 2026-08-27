@@ -20,9 +20,17 @@
 #include "socks5.h"
 
 #define SOCKS5_BUF_SIZE 4096
-#define DNS_CACHE_SIZE 256
-#define DNS_CACHE_TTL 300
 #define MAX_SIMUL_CONNS 64
+#define QUEUE_SIZE 256
+
+/* Очередь пакетов для одного conn_id */
+typedef struct {
+    gost_packet_t pkts[QUEUE_SIZE];
+    int head, tail, count;
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    int closed;
+} packet_queue_t;
 
 static atomic_int active_conns = ATOMIC_VAR_INIT(0);
 
@@ -33,12 +41,90 @@ static quic_client_t *proxy_quic = NULL;
 static uint32_t *shared_ctr = NULL;
 static uint32_t next_cid = 1;
 
+/* Демультиплексор */
+static packet_queue_t queues[MAX_SIMUL_CONNS];
+static int demux_running = 0;
+static pthread_t demux_tid;
+
+static inline packet_queue_t* queue_get(uint32_t cid) {
+    if (cid >= MAX_SIMUL_CONNS) return NULL;
+    return &queues[cid];
+}
+
+static inline void queue_push(packet_queue_t *q, const gost_packet_t *pkt) {
+    pthread_mutex_lock(&q->lock);
+    if (q->count < QUEUE_SIZE) {
+        q->pkts[q->tail] = *pkt;
+        q->tail = (q->tail + 1) % QUEUE_SIZE;
+        q->count++;
+        pthread_cond_signal(&q->cond);
+    }
+    pthread_mutex_unlock(&q->lock);
+}
+
+static inline int queue_pop(packet_queue_t *q, gost_packet_t *out, int timeout_ms) {
+    pthread_mutex_lock(&q->lock);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_ms / 1000;
+    ts.tv_nsec += (timeout_ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    while (q->count == 0 && !q->closed) {
+        if (pthread_cond_timedwait(&q->cond, &q->lock, &ts) != 0) {
+            pthread_mutex_unlock(&q->lock);
+            return 0;
+        }
+    }
+    if (q->count == 0) { pthread_mutex_unlock(&q->lock); return -1; }
+    *out = q->pkts[q->head];
+    q->head = (q->head + 1) % QUEUE_SIZE;
+    q->count--;
+    pthread_mutex_unlock(&q->lock);
+    return sizeof(gost_packet_t);
+}
+
+static inline int queue_init(packet_queue_t *q) {
+    pthread_mutex_init(&q->lock, NULL);
+    pthread_cond_init(&q->cond, NULL);
+    q->head = q->tail = q->count = q->closed = 0;
+    return 0;
+}
+
+static inline void queue_destroy(packet_queue_t *q) {
+    q->closed = 1;
+    pthread_cond_broadcast(&q->cond);
+    pthread_mutex_destroy(&q->lock);
+    pthread_cond_destroy(&q->cond);
+}
+
+/* Демультиплексор: читает из UDP, разбрасывает по очередям */
+static void* demux_thread_func(void *arg) {
+    quic_client_t *qc = (quic_client_t *)arg;
+    uint8_t buf[4096];
+    while (demux_running) {
+        struct pollfd pfd = { .fd = qc->server_fd, .events = POLLIN };
+        int ret = poll(&pfd, 1, 200);
+        if (ret <= 0) continue;
+        if (!(pfd.revents & POLLIN)) continue;
+        ssize_t n = recvfrom(qc->server_fd, buf, sizeof(buf), 0, NULL, NULL);
+        if (n <= 0 || n < (ssize_t)sizeof(gost_packet_t)) continue;
+        const gost_packet_t *pkt = (const gost_packet_t *)buf;
+        if (ntohl(pkt->magic) != GOST_PROXY_MAGIC) continue;
+        uint32_t cid = ntohl(pkt->conn_id);
+        if (cid == 0) continue; /* handshake/keepalive без conn_id */
+        packet_queue_t *q = queue_get(cid);
+        if (q) queue_push(q, pkt);
+    }
+    return NULL;
+}
+
 static int tunnel_send(const uint8_t *data, size_t len, uint32_t cid, uint32_t *ctr) {
+    if (!data || !ctr || len == 0) { log_info("tunnel_send: bad params"); return -1; }
     log_info("tunnel_send: len=%zu, cid=%u, quic=%p fd=%d", len, cid, proxy_quic, proxy_quic?proxy_quic->server_fd:-1);
     size_t off = 0;
     while (off < len) {
         size_t chunk = len - off;
-        if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
+        if (chunk > MAX_PAYLOAD - 4 - PADDING_MIN_BYTES) chunk = MAX_PAYLOAD - 4 - PADDING_MIN_BYTES;
         gost_packet_t pkt; memset(&pkt, 0, sizeof(pkt));
         if (protocol_pack_data(&pkt, proxy_session.session_id, cid, data+off, chunk,
                               proxy_session.expanded_key, proxy_session.nonce, ctr, 0) != 0) {
@@ -54,20 +140,15 @@ static int tunnel_send(const uint8_t *data, size_t len, uint32_t cid, uint32_t *
 }
 
 static int tunnel_recv(uint8_t *out, size_t maxlen, int tmo, uint32_t ecid, uint32_t *ctr) {
-    (void)maxlen;
-    uint8_t buf[SOCKS5_BUF_SIZE];
-    log_info("tunnel_recv: tmo=%d, expect_cid=%u", tmo, ecid);
-    ssize_t n = quic_client_recv(proxy_quic, buf, sizeof(buf), tmo);
-    log_info("tunnel_recv: quic returned %zd", n);
-    if (n > 0 && n >= (ssize_t)sizeof(gost_packet_t)) {
-        const gost_packet_t *pkt = (const gost_packet_t*)buf;
-        log_info("tunnel_recv: magic=0x%08x, type=%u, conn_id=%u", ntohl(pkt->magic), pkt->type, ntohl(pkt->conn_id));
-        if (ntohl(pkt->magic)==GOST_PROXY_MAGIC && pkt->type==PKT_DATA) {
-            if (ntohl(pkt->conn_id)!=ecid) { log_info("tunnel_recv: cid mismatch"); return -1; }
+    if (!out || !ctr || maxlen < 1) return -1;
+    gost_packet_t pkt;
+    int n = queue_pop(queue_get(ecid), &pkt, tmo);
+    if (n > 0) {
+        if (ntohl(pkt.magic)==GOST_PROXY_MAGIC && pkt.type==PKT_DATA && ntohl(pkt.conn_id)==ecid) {
             size_t dl;
-            if (protocol_unpack_data(pkt, out, &dl, NULL, proxy_session.expanded_key,
+            if (protocol_unpack_data(&pkt, out, &dl, NULL, proxy_session.expanded_key,
                                     proxy_session.nonce, ctr, 0)==0) {
-                log_info("tunnel_recv: unpacked %zu bytes", dl);
+                if (dl > maxlen) dl = maxlen;
                 return (int)dl;
             }
         }
@@ -170,6 +251,8 @@ int socks5_start(uint16_t port, const char *sip, uint16_t sport,
     memcpy(proxy_session.nonce,nonce,NONCE_SIZE);
     memcpy(proxy_session.expanded_key,ek,160);
     proxy_quic=qc;shared_ctr=sc;
+    /* Инициализация очередей */
+    for (int i = 0; i < MAX_SIMUL_CONNS; i++) queue_init(&queues[i]);
     socks5_listen_fd=socket(AF_INET,SOCK_STREAM,0);
     if (socks5_listen_fd<0){perror("socket");return -1;}
     int opt=1;setsockopt(socks5_listen_fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
@@ -178,6 +261,9 @@ int socks5_start(uint16_t port, const char *sip, uint16_t sport,
     if (bind(socks5_listen_fd,(struct sockaddr*)&a,sizeof(a))<0){perror("bind");close(socks5_listen_fd);return -1;}
     if (listen(socks5_listen_fd,16)<0){perror("listen");close(socks5_listen_fd);return -1;}
     socks5_running=1;
+    demux_running=1;
+    if (pthread_create(&demux_tid,NULL,demux_thread_func,proxy_quic)!=0){perror("demux pthread");close(socks5_listen_fd);return -1;}
+    pthread_detach(demux_tid);
     pthread_t t;
     if (pthread_create(&t,NULL,socks5_server_thread,NULL)!=0){perror("pthread");close(socks5_listen_fd);return -1;}
     pthread_detach(t);
@@ -186,5 +272,8 @@ int socks5_start(uint16_t port, const char *sip, uint16_t sport,
 
 void socks5_stop(void) {
     socks5_running=0;
+    demux_running=0;
+    pthread_join(demux_tid, NULL);
+    for (int i = 0; i < MAX_SIMUL_CONNS; i++) queue_destroy(&queues[i]);
     if (socks5_listen_fd>=0){close(socks5_listen_fd);socks5_listen_fd=-1;}
 }

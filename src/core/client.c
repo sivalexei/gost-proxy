@@ -51,6 +51,8 @@ int main(int argc, char *argv[]) {
     else
         printf("[CONFIG] Файл не найден, используются значения по умолчанию\n");
 
+    printf("[DEBUG] cfg.key='%s' (len=%zu)\n", cfg.key, strlen(cfg.key));
+
     /* Инициализация логирования */
     log_init(cfg.log_level, cfg.log_file);
 
@@ -68,6 +70,8 @@ int main(int argc, char *argv[]) {
         client_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(client_key, expanded_key);
+    printf("[DEBUG] client key: %02x%02x%02x%02x...%02x%02x\n", client_key[0],client_key[1],client_key[2],client_key[3], client_key[30],client_key[31]);
+    printf("[DEBUG] client expanded_key: %02x%02x%02x%02x...%02x%02x\n", expanded_key[0],expanded_key[1],expanded_key[2],expanded_key[3], expanded_key[155],expanded_key[159]);
 
     /* Подключаемся через QUIC */
     if (quic_client_connect(&quic_client, cfg.server_ip, cfg.server_port, client_key) != 0) {

@@ -92,6 +92,7 @@ typedef struct {
     uint8_t  cps_enabled;
     uint8_t  cps_challenge[32];
     uint8_t  cps_response[32];
+    time_t   last_activity;   /* время последней активности */
 } gost_session_t;
 
 #endif /* GOST_COMMON_H */

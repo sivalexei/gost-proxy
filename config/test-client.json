@@ -1,0 +1,7 @@
+{
+  "server_ip": "127.0.0.1",
+  "server_port": 10443,
+  "key": "0000000000000000000000000000000000000000000000000000000000000000",
+  "log_level": "info",
+  "log_file": "/var/log/gost-proxy/client.log"
+}

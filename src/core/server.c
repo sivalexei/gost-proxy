@@ -106,13 +106,27 @@ static void session_remove(int idx) {
 
 /* Поиск свободных слотов начиная с free_slot_next, с wrap-around */
 static inline void session_reset_free_slot(void) {
-    int cur = atomic_load(&free_slot_next);
-    for (int i = 0; i < cur; i++) {
+    for (int i = 0; i < max_sessions; i++) {
         if (!sessions[i].active) {
             atomic_store(&free_slot_next, i);
             return;
         }
     }
+    atomic_store(&free_slot_next, 0);
+}
+
+/* Проверка и очистка старых сессий */
+static void expire_sessions(void) {
+    time_t now = time(NULL);
+    for (int i = 0; i < max_sessions; i++) {
+        if (sessions[i].active &&
+            sessions[i].last_activity > 0 &&
+            now - sessions[i].last_activity > cfg.session_timeout) {
+            log_debug("Expire session %llu", (unsigned long long)sessions[i].session_id);
+            session_remove(i);
+        }
+    }
+    session_reset_free_slot();
 }
 static void signal_handler(int sig) { (void)sig; running = 0; }
 
@@ -132,6 +146,7 @@ static inline gost_session_t* create_session(uint64_t sid) {
             atomic_store(&free_slot_next, i + 1);
             sessions[i].active = 1; sessions[i].session_id = sid;
             sessions[i].counter = 0; memset(sessions[i].nonce, 0, NONCE_SIZE);
+            sessions[i].last_activity = time(NULL);
             /* Генерация случайного nonce (96 бит) для каждого соединения */
             ssize_t nr = getrandom(sessions[i].nonce, NONCE_SIZE, 0);
             if (nr < NONCE_SIZE) {
@@ -220,11 +235,13 @@ static int connect_to_target(const char *host, uint16_t port) {
 }
 static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
                                const gost_packet_t *pkt, uint64_t session_id) {
-    uint8_t decrypted[MAX_PAYLOAD]; size_t data_len; uint32_t pkt_conn_id = 0;
+    uint8_t decrypted[MAX_PAYLOAD]; size_t data_len = 0; uint32_t pkt_conn_id = 0;
     /* mutex уже захвачен в handle_packet */
     gost_session_t *session = find_session(session_id);
     if (!session) { return; }
-    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key, session->nonce, &session->counter, 0) != 0) { return; }
+    session->last_activity = time(NULL);
+    if (protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session->expanded_key,
+                             session->nonce, &session->counter, 0) != 0) { return; }
     if (data_len < 1) { return; }
     /* Сервер трактует все DATA-пакеты как данные туннеля.
      * CONNECT-запросы передаются как данные с префиксом:
@@ -323,11 +340,12 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                     if (rd < (ssize_t)sizeof(session_id)) break;
                 } else { break; }
             }
+            expire_sessions();
             gost_session_t *session = create_session(session_id);
             (void)rnd_ret;
             if (!session) {
                 /* Слоты кончились — сбрасываем и пробуем заново */
-                session_reset_free_slot();
+                expire_sessions();
                 session = create_session(session_id);
                 if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
             }
@@ -344,8 +362,8 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
         }
         case PKT_KEEPALIVE: break;
         case PKT_SIM_CHALLENGE: {
+            expire_sessions();
             uint64_t session_id = ntohll(pkt->session_id);
-            /* Если слотов нет — сбрасываем free_slot_next и ищем заново */
             gost_session_t *session = find_session(session_id);
             if (!session) { session_reset_free_slot(); session = find_session(session_id); }
             if (!session) break;
