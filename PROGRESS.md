@@ -1,157 +1,117 @@
 # Прогресс разработки — ГОСТ Прокси
 
-## Текущий статус: v1.0.0 ✅
+## Текущий статус: v2.0.0
 
-Все основные функции реализованы и протестированы.
+Основные функции реализованы и протестированы. CPS handshake работает, туннель передаёт данные end-to-end.
 
 ---
 
-## ✅ Выполненные задачи
+## ✅ Выполненные задачи (v2.0.0)
 
-### 1. Криптографическое ядро (Кузнечик)
-- **Ключевое расширение** — реализация из RFC 7801 §5.4, все тесты прошли
-- **Блочное шифрование** — ECB режим, тесты на соответствие RFC 7801 §5.5
-- **CTR-режим** — потоковое шифрование с roundtrip тестами
-- **MAC (аутентификация)** — encrypt-then-MAC для целостности данных
-- Все тесты по RFC 7801 прошли ✅
+### 1. Криптографическое ядро
+- **Кузнечик** — C-реализация по RFC 7801, все 5 тестов прошли
+- **CTR-режим** — потоковое шифрование
+- **MAC** — encrypt-then-MAC для целостности
+- **Nonce** — генерация из `/dev/urandom`
 
-### 2. UDP-транспорт (аналог Hysteria2)
-- **Серверный UDP-сокет** — создание, настройка, обработка пакетов
+### 2. QUIC-транспорт
+- **UDP-сокет** — серверный listener, клиентский connect
 - **Протокол пакетов** — magic, type, conn_id, session_id, payload, auth_tag
 - **Типы пакетов**: HANDSHAKE (0x01), DATA (0x02), KEEPALIVE (0x03), DISCONNECT (0x04)
-- **Session management** — создание/удаление сессий, session_id (8 байт)
+- **Session management** — создание/удаление, переиспользование слотов
 - **conn_id** — мультиплексирование, параллельные соединения изолированы
+- **Демультиплексор** — один читатель, потоки читают из очереди
 
-### 3. TCP-прокси (сервер)
-- **tcp_helpers.asm** — assembly write-loop для гарантированной доставки
-- **Обработка DATA-пакетов** — извлечение payload, перенаправление через TCP
-- **DISCONNECT** — корректное завершение TCP-соединений
-- **KEEPALIVE** — отправка от клиента к серверу
-- **Сохранение session_id** — для ретрансляции в ответах
+### 3. CPS (Chaffing/Pretense System)
+- **Fake packets** — QUIC/DNS/TLS обфускация для маскировки
+- **Challenge/Response** — верификация сессии через HMAC
+- **Session key** — из KDF(PSK, client_nonce, server_nonce)
 
-### 4. Клиент (SOCKS5 + UDP)
-- **SOCKS5-прокси** — запуск на 127.0.0.1:1080
-- **SOCKS5 CONNECT** — поддержка TCP CONNECT через UDP-транспорт
-- **UDP relay** — пересылка данных через UDP с шифрованием
-- **tcp_write_all** — гарантированная доставка через TCP write-loop
+### 4. TCP-прокси (сервер)
+- **DATA-пакеты** — извлечение payload, перенаправление через TCP
+- **DISCONNECT** — корректное завершение
+- **tcp_helpers.asm** — assembly write-loop для гарантии доставки
 
-### 5. Конфигурация
-- **JSON-парсер** — простой парсер с поддержкой строк и чисел
+### 5. Клиент (SOCKS5 + UDP)
+- **SOCKS5-прокси** — на 127.0.0.1:1081
+- **CONNECT** — поддержка TCP через UDP-транспорт
+- **DNS на сервере** — клиент шлёт ATYP 0x03 (домен), сервер резолвит
+
+### 6. Обфускация
+- **Salamander XOR** — рандомизация размера пакетов
+- **Header seed** — перемешивание заголовка
+
+### 7. Конфигурация
+- **JSON-парсер** — поддержка строк и чисел
 - **server.json** — bind, port, max_sessions, key, log_level, log_file
 - **client.json** — server_ip, server_port, key, log_level, log_file
-- **config_defaults()** — значения по умолчанию
+- **GOST_PROXY_KEY** env-переменная
+- **Валидация** — 64 hex-символа = 32 байт ключа
 
-### 6. Логирование
-- **Структурированное логирование** — timestamp, level, message
-- **Уровни**: error, warn, info, debug
-- **Два потока** — stderr + файл (настраивается)
-- **Потокобезопасность** — pthread_mutex
+### 8. Логирование
+- **Структурированное** — timestamp, level, message
+- **Уровни** — error, warn, info, debug
+- **Два потока** — stderr + файл
+- **Fallback** — /tmp/gost-proxy.log если /var/log недоступен
 
-### 7. Пакетирование и протокол
-- **DEB-пакеты** — build_deb.sh
-  - gost-proxy-server — сервер с systemd unit
-  - gost-proxy-client — клиент с systemd unit
-  - Включает постинсталляционные скрипты
-- **RPM-пакеты** — build_rpm.sh (ALT Linux совместимость)
-  - gost-proxy-server — сервер с systemd unit
-  - gost-proxy-client — клиент с systemd unit
-  - Man-страницы для server и client
-  - systemd post/preun/postun скрипты
-- **Системные сервисы**:
-  - `gost-proxy-server.service` — автозапуск, рестарт, LimitNOFILE=65536
-  - `gost-proxy-client.service` — автозапуск, рестарт, LimitNOFILE=65536
-- **Синхронизация counter** — `protocol_unpack_data` теперь обновляет counter значением из пакета для корректной синхронизации CTR-счётчика
-- **DEB-пакеты** — build_deb.sh
-  - gost-proxy-server — сервер с systemd unit
-  - gost-proxy-client — клиент с systemd unit
-  - Включает постинсталляционные скрипты
-- **RPM-пакеты** — build_rpm.sh (ALT Linux совместимость)
-  - gost-proxy-server — сервер с systemd unit
-  - gost-proxy-client — клиент с systemd unit
-  - Man-страницы для server и client
-  - systemd post/preun/postun скрипты
-- **Системные сервисы**:
-  - `gost-proxy-server.service` — автозапуск, рестарт, LimitNOFILE=65536
-  - `gost-proxy-client.service` — автозапуск, рестарт, LimitNOFILE=65536
+### 9. Пакетирование
+- **RPM** — build_rpm.sh, ALT Linux
+  - gost-proxy-server с systemd unit
+  - gost-proxy-client с systemd unit
+- **DEB** — build_deb.sh, Ubuntu/Debian
+- **systemd** — автозапуск, рестарт, LimitNOFILE=65536
 
-### 8. Тестирование
-- **5 крипто-тестов** — все прошли ✅
-  1. Расширение ключа (RFC 7801 §5.4)
-  2. Шифрование (RFC 7801 §5.5)
-  3. Расшифрование (RFC 7801 §5.6)
-  4. CTR-режим (roundtrip)
-  5. Полный roundtrip encrypt→decrypt
+### 10. Безопасность
+- **session_id** из /dev/urandom
+- **conn_id** изолирует параллельные соединения
+- **session_hash** с цепочками (без коллизий)
+- **session_remove** — корректное удаление из хеша
 
 ---
 
-## 🔄 Текущие задачи
+## 🔄 Осталось реализовать (DEVELOPMENT_PLAN.md)
 
-### 1. Keepalive от сервера к клиенту (низкий приоритет)
-- Клиент отправляет KEEPALIVE на сервер — ✅
-- Сервер должен отправлять KEEPALIVE обратно клиенту — 🔲
-- Это нужно для поддержания NAT-сессий
+### Короткие задачи (P0)
+- [ ] Keepalive от сервера к клиенту (2-3 часа)
+- [ ] Таймауты сессий (2-3 часа)
+- [ ] Валидация входных данных (1 день)
 
-### 2. Таймауты сессий на сервере (низкий приоритет)
-- max_sessions и session_timeout читаются из конфига — ✅
-- Фактическая очистка просроченных сессий — 🔲
-- Нужно добавить background-timer или проверку в main loop
+### Средние задачи (P1)
+- [ ] DNS-кэш (1 день)
+- [ ] IPv6 поддержка (2-3 дня)
+- [ ] epoll вместо poll (3-4 дня)
 
-### 3. Тест hex_dump (низкий приоритет)
-- hex_dump из tcp_helpers.asm не протестирован отдельно
-- Можно проверить через gdb или добавить отдельный тест
-
----
-
-## 📋 Следующие шаги
-
-### Короткие улучшения
-- [ ] Добавить keepalive от сервера к клиенту
-- [ ] Добавить таймауты сессий
-- [ ] Добавить IPv6 поддержку (опционально)
-- [ ] Добавить поддержку нескольких серверов (failover)
-
-### Среднесрочные задачи
-- [ ] Добавить аутентификацию пользователя (SOCKS5 auth)
-- [ ] Добавить rate limiting на клиенте
-- [ ] Добавить статистику (пропускная способность, количество сессий)
-- [ ] Добавить graceful shutdown
+### Безопасность (P2)
+- [ ] Аутентификация handshake (2-3 дня)
+- [ ] MAC с привязкой к длине (1-2 дня)
+- [ ] Retry handshake с backoff (2-3 часа)
 
 ---
 
-## 📦 Сборка пакетов
+## 📦 Сборка и запуск
 
-### DEB (Ubuntu/Debian)
 ```bash
-./build_deb.sh
-ls debs/
+# Сборка
+make              # gost-server и gost-client
+make test         # крипто-тесты (все 5 прошли)
+make clean        # очистка
+
+# Запуск
+./build/gost-server config/server.json
+./build/gost-client config/client.json
+
+# Проверка
+curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ```
 
-### RPM (ALT Linux)
-```bash
-./build_rpm.sh
-ls rpmbuild/RPMS/x86_64/
-```
+### HTTPS через прокси
+Прокси пересылает байты — TLS handshake в клиентском приложении.
+Используйте curl с OpenSSL или Firefox (NSS).
 
-### Установка
-```bash
-# DEB
-sudo dpkg -i debs/gost-proxy-server_1.0.0_amd64.deb
-sudo dpkg -i debs/gost-proxy-client_1.0.0_amd64.deb
+---
 
-# RPM
-sudo rpm -i rpmbuild/RPMS/x86_64/gost-proxy-server-1.0.0-1.x86_64.rpm
-sudo rpm -i rpmbuild/RPMS/x86_64/gost-proxy-client-1.0.0-1.x86_64.rpm
-```
+## 📝 История версий
 
-### Запуск
-```bash
-# Сервер
-sudo systemctl start gost-proxy-server
-sudo systemctl enable gost-proxy-server
-
-# Клиент
-gost-client /etc/gost-proxy/client.json
-# Или через systemd:
-sudo systemctl start gost-proxy-client
-sudo systemctl enable gost-proxy-client
-```
+- **v2.0.0** (2026-08-28) — CPS handshake, обфускация, переиспользование сессий, DNS на сервере
+- **v1.0.0** (2026-08-01) — начальный рабочий туннель, крипто-ядро, QUIC-транспорт
+- **v0.1.0** (2026-07-xx) — прототип, сборка, базовый протокол

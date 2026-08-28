@@ -2,8 +2,8 @@
 
 ## Текущее состояние проекта
 
-✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, session_id fix, CPS handshake
-⚠️ **Проблемы:** Нет демультиплексора, UDP socket на каждое соединение, слоты не переиспользуются, DNS утекает, нет IPv6, epoll отсутствует
+✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, CPS handshake, session переиспользование, DNS на сервере
+⚠️ **Осталось:** IPv6, epoll, аутентификация handshake, keepalive от сервера, таймауты сессий, тесты
 
 ---
 
@@ -16,99 +16,104 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 **Ключевые модули:**
 - `src/crypto/gost_cipher.c` — ГОСТ Р 34.12-2015 (Кузнечик), RFC 7801 ✅
-- `src/core/session.c` — pack/unpack, CTR, MAC, padding
-- `src/core/obfuscation.c` — обфускация payload
-- `src/network/quic_layer.c` — UDP-слой
-- `src/network/socks5.c` — SOCKS5-прокси
-- `src/core/server.c` — сервер: UDP listener → TCP прокси
+- `src/core/session.c` — pack/unpack, CTR, MAC, padding, CPS ✅
+- `src/core/obfuscation.c` — обфускация payload ✅
+- `src/network/quic_layer.c` — UDP-слой ✅
+- `src/network/socks5.c` — SOCKS5-прокси ✅
+- `src/core/server.c` — сервер: UDP listener → TCP прокси ✅
+
+---
+
+## Реализовано (v1.0.0)
+
+- ✅ Сборка Makefile (gost-server, gost-client)
+- ✅ Криптографическое ядро — Кузнечик, все 5 тестов RFC 7801 прошли
+- ✅ QUIC-транспорт поверх UDP (handshake, keepalive, мультиплексирование conn_id)
+- ✅ Auth-tag (encrypt-then-MAC) для проверки целостности
+- ✅ CTR-режим для потоковых данных
+- ✅ conn_id — параллельные соединения изолированы
+- ✅ Демультиплексор — все потоки читают из одного UDP сокота
+- ✅ Переиспользование сессий (free list + тайм-аут)
+- ✅ Хеш сессий с цепочками (без коллизий)
+- ✅ CPS handshake — challenge/response с фиксированным ключом
+- ✅ Обфускация payload (Salamander XOR)
+- ✅ DNS на сервере (клиент шлёт ATYP 0x03 домен)
+- ✅ Логирование с fallback на /tmp/gost-proxy.log
+- ✅ systemd-юниты (gost-proxy-server, gost-proxy-client)
+- ✅ Сборка RPM/DEB пакетов
+- ✅ Ключ из JSON/env (64 hex-символа)
+- ✅ Nonce из /dev/urandom
 
 ---
 
 ## Этап 1. Стабильность (P0)
 
-### 1.1. Демультиплексор пакетов (2-3 дня)
-Проблема: Все потоки читают из одного UDP-сокота, гонка при >1 соединении.
-Решение: Один читатель → кольцевые буферы per conn_id → condvar.
-Файлы: socks5.c, socks5.h
-Критерий: 50 параллельных curl, все ответы корректны
-
-### 1.2. UDP socket reuse на сервере (2-3 часа)
-Проблема: tcp_to_udp_thread создаёт новый UDP-сокет, ответы с эфемерного порта.
-Решение: Передавать quic_server_t в поток, слать через него.
-Файлы: server.c
-
-### 1.3. Переиспользование сессий (3-4 часа)
-Проблема: free_slot_next только растёт, 256 рукопожатий → отказ.
-Решение: Free list + тайм-аут (session_timeout) + rate_limit на IP.
-Файлы: server.c
-
-### 1.4. Валидация входных данных (1 день)
+### 1.1. Валидация входных данных (1 день)
 Проблема: Пакеты от 10 байт, читает как полную структуру (1433 Б).
 Решение: Требовать sizeof(gost_packet_t), проверять n >= 5+dlen+2.
 Файлы: server.c, socks5.c, session.c
 
-### 1.5. Хеш сессий без коллизий (2-3 часа)
-Проблема: Прямое отображение sid%512, коллизия = потеря сессии.
-Решение: Цепочки или открытая адресация.
+### 1.2. Keepalive от сервера к клиенту (2-3 часа)
+Проблема: Клиент отправляет KEEPALIVE, сервер не отвечает.
+Решение: Сервер шлёт PKT_KEEPALIVE обратно каждые 30 сек.
+Файлы: server.c
+
+### 1.3. Таймауты сессий (2-3 часа)
+Проблема: session_timeout из конфига не используется.
+Решение: Проверка в main loop, очистка просроченных сессий.
 Файлы: server.c
 
 ---
 
 ## Этап 2. Архитектура (P1)
 
-### 2.1. DNS на сервере (2-3 дня)
-Проблема: gethostbyname() на клиенте (не потокобезопасен), DNS утекает.
-Решение: Клиент шлёт ATYP 0x03, сервер резолвит через getaddrinfo(), IPv6.
-Файлы: socks5.c, server.c
+### 2.1. DNS-кэш (1 день)
+Проблема: getaddrinfo() на каждом CONNECT.
+Решение: Лёгкий кэш с TTL, LRU-вытеснение.
+Файлы: server.c, socks5.c
 
-### 2.2. Эвент-driven I/O (3-4 дня)
-Проблема: poll 100мс → tunnel_recv 50мс → 100% CPU.
-Решение: epoll вместо poll.
-Файлы: socks5.c
+### 2.2. IPv6 (2-3 дня)
+Презаема: IPv4-only, gethostbyname().
+Решение: getaddrinfo() с поддержкой A+AAAA, dual-stack sockets.
+Файлы: socks5.c, server.c, quic_layer.c
 
-### 2.3. Мультиплексирование соединений (1-2 дня)
-Проблема: sessions_lock на время getaddrinfo()+connect (5 сек).
-Решение: connect() в отдельный поток, async-подход.
-Файлы: server.c
+### 2.3. epoll вместо poll (3-4 дня)
+Проблема: poll 100мс → 100% CPU.
+Решение: epoll event loop.
+Файлы: socks5.c, quic_layer.c
 
 ---
 
 ## Этап 3. Безопасность (P2)
 
-### 3.1. Аутентификация handshake
+### 3.1. Аутентификация handshake (2-3 дня)
 Проблема: auth_tag не проверяется, сервер принимает от всех.
 Решение: CMAC(PSK, client_nonce || server_nonce).
 Файлы: session.c, quic_layer.c
 
-### 3.2. MAC вместо compute_mac
+### 3.2. MAC с привязкой к длине (1-2 дня)
 Проблема: compute_mac инвариантен к перестановке блоков.
 Решение: CMAC на отдельном ключе, привязка к длине.
 Файлы: session.c
 
-### 3.3. Nonce из getrandom
-Проблема: session_id из rand() → одинаковая гамма при перезапуске.
-Решение: getrandom(), nonce уникален per session+direction.
-Файлы: session.c, quic_layer.c
+### 3.3. Retry handshake с backoff (2-3 часа)
+Проблема: Клиент падает при недоступном сервере.
+Решение: Экспоненциальный backoff вместо выхода.
+Файлы: client.c
 
 ---
 
 ## Этап 4. Эксплуатация (P3)
 
-### 4.1. Ключ по умолчанию
-Проблема: Ключ зашит в конфиги с правами 0644.
-Решение: Генерировать в %post, права 0600.
+### 4.1. Rate limiting (1-2 дня)
+Проблема: rate_limit в конфиге есть, но не используется.
+Решение: Token bucket per IP, configurable.
+Файлы: server.c
 
-### 4.2. systemd-юниты
-Проблема: Без User=, работают от root.
-Решение: User=, NoNewPrivileges=, ProtectSystem=strict.
-
-### 4.3. Retry handshake
-Проблема: Клиент падает при недоступном сервере.
-Решение: Экспоненциальный backoff вместо выхода.
-
-### 4.4. Логирование
-Проблема: log_file по умолчанию /var/log/... (не открывается от непривилегированного).
-Решение: journald fallback.
+### 4.2. Graceful shutdown (2-3 часа)
+Проблема: SIGINT убивает процессы без очистки.
+Решение: Обработка SIGINT, отправка DISCONNECT.
+Файлы: server.c, client.c
 
 ---
 
@@ -119,15 +124,12 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 - Повреждённый MAC, повтор счётчика
 - Обрезанные пакеты
 
-### 5.2. Фаззинг
-- protocol_unpack_data (libFuzzer/AFL++)
-- SOCKS5 разбор
-
-### 5.3. Интеграционный тест
+### 5.2. Интеграционный тест
 - Сервер + клиент → curl через прокси
 - Сверить контрольную сумму
+- Проверить CPS handshake
 
-### 5.4. Санитайзеры
+### 5.3. Санитайзеры
 - fsanitize=address,undefined
 - -Werror в CI
 
@@ -137,10 +139,10 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 | Этап | Что | Оценка |
 |------|-----|--------|
-| 1 | Стабильность (P0) | 5-6 дней |
-| 2 | Архитектура (P1) | 7-10 дней |
-| 3 | Безопасность (P2) | 3-4 дня |
+| 1 | Стабильность (P0) | 1.5-2 дня |
+| 2 | Архитектура (P1) | 5-7 дней |
+| 3 | Безопасность (P2) | 4-6 дней |
 | 4 | Эксплуатация (P3) | 1-2 дня |
-| 5 | Тесты (параллельно) | 5 дней |
+| 5 | Тесты (параллельно) | 3-4 дня |
 
-**Суммарно:** ~6-8 недель на одного разработчика, с параллельными тестами.
+**Суммарно:** ~4-6 недель на одного разработчика.

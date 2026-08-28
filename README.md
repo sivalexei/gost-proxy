@@ -4,13 +4,15 @@ SOCKS5-прокси с шифрованием ГОСТ Р 34.12-2015 "Кузне
 
 ## Возможности
 
-- Шифрование ГОСТ Р 34.12-2015 (Кузнечик) — C-реализация по RFC 7801
-- QUIC-транспорт поверх UDP (рукопожатие, keepalive, мультиплексирование)
-- Auth-tag (encrypt-then-MAC) для проверки целостности
-- CTR-режим для потоковых данных
-- conn_id мультиплексирование — параллельные соединения изолированы
-- SOCKS5-прокси на клиенте (127.0.0.1:1081)
-- systemd-юниты для автоматического запуска
+- **Шифрование** ГОСТ Р 34.12-2015 (Кузнечик) — C-реализация по RFC 7801
+- **QUIC-транспорт** поверх UDP с рукопожатием, keepalive и мультиплексированием
+- **CPS (Chaffing/Pretense System)** — обфускация трафика для маскировки под случайный
+- **Auth-tag** — encrypt-then-MAC для проверки целостности
+- **conn_id** — изолированные параллельные соединения
+- **SOCKS5-прокси** на клиенте (127.0.0.1:1081)
+- **DNS на сервере** — клиент шлёт домен, сервер резолвит через getaddrinfo()
+- **Переиспользование сессий** — free list + тайм-ауты
+- **systemd-юниты** для автоматического запуска
 
 ## Требования
 
@@ -60,10 +62,11 @@ src/
 ├── core/
 │   ├── server.c           # Прокси-сервер (UDP → TCP)
 │   ├── client.c           # Клиент (SOCKS5 → UDP)
-│   ├── session.c          # pack/unpack с CTR + MAC
+│   ├── session.c          # pack/unpack с CTR + MAC, CPS
 │   ├── protocol.h         # Протокол обмена
 │   ├── config.c           # JSON-парсер конфигурации
 │   ├── log.c              # Логирование
+│   ├── obfuscation.c      # Обфускация (Salamander XOR)
 │   └── tcp_helpers.asm    # Быстрый TCP write loop (NASM x86-64)
 └── network/
     ├── socks5.c           # SOCKS5 CONNECT + relay
@@ -84,6 +87,8 @@ src/
 | 0x02 | DATA — зашифрованные данные с conn_id |
 | 0x03 | KEEPALIVE — поддержание сессии |
 | 0x04 | DISCONNECT — отключение |
+| 0x10-0x13 | Fake QUIC/DNS/TLS — обфускация CPS |
+| 0x14 | CPS Challenge/Response |
 
 ## Сборка пакетов
 
@@ -91,6 +96,10 @@ src/
 # RPM (ALT Linux)
 ./build_rpm.sh
 ls rpmbuild/RPMS/x86_64/*.rpm
+
+# DEB (Ubuntu/Debian)
+./build_deb.sh
+ls debs/*.deb
 ```
 
 ## HTTPS через прокси
@@ -114,19 +123,11 @@ curl --socks5-hostname 127.0.0.1:1081 https://example.com
 
 - Ключ 256 бит, блок 128 бит, 10 раундов
 - CTR-режим, encrypt-then-MAC
+- Nonce из `/dev/urandom`
 - conn_id изолирует параллельные соединения
+- CPS handshake — challenge/response верификация
 
-## Сборка RPM для ALT Linux
+## Разработка
 
-```bash
-./build_rpm.sh
-```
-
-Создаёт пакеты:
-- `gost-proxy-server` — сервер с systemd-юнитом
-- `gost-proxy-client` — клиент с systemd-юнитом
-
-```bash
-sudo dnf install gost-proxy-server-1.0.0-2.x86_64.rpm
-sudo systemctl enable --now gost-proxy-server
-```
+План развития: `DEVELOPMENT_PLAN.md`
+История изменений: `PROGRESS.md`
