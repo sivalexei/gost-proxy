@@ -54,9 +54,9 @@ int main(int argc, char *argv[]) {
 
     printf("[DEBUG] cfg.key='%s' (len=%zu)\n", cfg.key, strlen(cfg.key));
 
-    /* Лог по умолчанию в текущую директорию */
+    /* Лог по умолчанию в /tmp/gost-proxy/client.log */
     if (cfg.log_file[0] == '\0' || strcmp(cfg.log_file, "/var/log/gost-proxy/client.log") == 0) {
-        strncpy(cfg.log_file, "./gost-proxy-client.log", sizeof(cfg.log_file));
+        strncpy(cfg.log_file, "/tmp/gost-proxy/client.log", sizeof(cfg.log_file));
     }
     /* Инициализация логирования */
     log_init(cfg.log_level, cfg.log_file);

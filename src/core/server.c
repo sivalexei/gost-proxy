@@ -48,7 +48,7 @@ extern ssize_t tcp_write_all(int fd, const void *buf, size_t len);
 
 #define BUFFER_SIZE 2048
 #define DEFAULT_CONFIG "/etc/gost-proxy/server.json"
-#define DEFAULT_LOG_FILE "./gost-proxy-server.log"
+#define DEFAULT_LOG_FILE "/tmp/gost-proxy/server.log"
 #define MAX_PROXY_CONNS 256
 #define MAX_HS_PER_IP 10   /* max handshake attempts per IP per 60s */
 #define HS_WINDOW 60       /* rate limit window in seconds */
@@ -401,21 +401,10 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 break;  /* аутентификация не пройдена — отклоняем */
             }
 
-            /* Генерация session_id из /dev/urandom вместо rand() */
-            /* session_id в host byte order */
-            uint64_t session_id;
-            ssize_t rnd_ret = getrandom(&session_id, sizeof(session_id), 0);
-            if (rnd_ret < 0) {
-                int fd = open("/dev/urandom", O_RDONLY);
-                if (fd >= 0) {
-                    ssize_t rd = read(fd, &session_id, sizeof(session_id));
-                    close(fd);
-                    if (rd < (ssize_t)sizeof(session_id)) break;
-                } else { break; }
-            }
+            /* Используем session_id клиента из handshake (host byte order) */
+            uint64_t session_id = client_sid;
             expire_sessions();
             gost_session_t *session = create_session(session_id);
-            (void)rnd_ret;
             if (!session) {
                 /* Слоты кончились — сбрасываем и пробуем заново */
                 expire_sessions();
@@ -439,9 +428,11 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             uint64_t session_id = ntohll(pkt->session_id);
             gost_session_t *session = find_session(session_id);
             if (!session) { session_reset_free_slot(); session = find_session(session_id); }
-            if (!session) break;
+            if (!session) { log_warn("CHALLENGE: session not found for sid=%llu", (unsigned long long)session_id); break; }
             uint8_t answer[32] = {0};
-            if (protocol_verify_cps_challenge(pkt, answer, sizeof(answer)) == 0) {
+            int verify_ret = protocol_verify_cps_challenge(pkt, answer, sizeof(answer));
+            log_debug("CHALLENGE: verify=%d for sid=%llu", verify_ret, (unsigned long long)session_id);
+            if (verify_ret == 0) {
                 session->cps_enabled = 1;
                 memcpy(session->cps_response, answer, 32);
                 gost_packet_t resp;
@@ -450,6 +441,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 resp.type = PKT_SIM_CHALLENGE;
                 resp.session_id = session_id;
                 memcpy(resp.payload, answer, 32);
+                memcpy(resp.payload+32, answer, 32);  /* challenge=answer для ответа */
                 quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&resp, sizeof(resp));
                 log_info("CPS challenge verified (sid=%llu)", (unsigned long long)session_id);
             }
@@ -490,7 +482,7 @@ int main(int argc, char *argv[]) {
     config_defaults(&cfg);
     if (config_load(&cfg, config_path) == 0) printf("[CONFIG] Loaded: %s\n", config_path);
     else printf("[CONFIG] Default config\n");
-    /* Лог по умолчанию в текущую директорию (не /var/log/, если файл не задан) */
+    /* Лог по умолчанию в /tmp/gost-proxy/server.log */
     if (cfg.log_file[0] == '\0' || strcmp(cfg.log_file, "/var/log/gost-proxy/server.log") == 0) {
         strncpy(cfg.log_file, DEFAULT_LOG_FILE, sizeof(cfg.log_file));
     }

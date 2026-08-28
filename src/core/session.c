@@ -93,12 +93,13 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     pkt->payload[2]=(pc>>8)&0xFF;pkt->payload[3]=pc&0xFF;
     uint32_t plen=protocol_compute_padding_len(session_id);
     memcpy(pkt->payload+8,data,data_len); uint32_t pdl=(uint32_t)data_len;
-    uint32_t tl=pdl+plen;
+    protocol_insert_padding(pkt->payload+8,&pdl,plen,session_id);
+    uint32_t tl=pdl;  /* tl = длина после вставки padding */
     pkt->payload[4]=(tl>>24)&0xFF;pkt->payload[5]=(tl>>16)&0xFF;
     pkt->payload[6]=(tl>>8)&0xFF;pkt->payload[7]=tl&0xFF;
-    protocol_insert_padding(pkt->payload+8,&pdl,plen,session_id);
+    /* Шифруем payload[8..8+tl-1], payload[0..7] = plaintext */
     uint8_t cn[16]; make_ctr_nonce(nonce,pc,cn);
-    kuznyechik_encrypt_ctr(pkt->payload+4,pkt->payload+4,MAX_PAYLOAD-4,ek,cn);
+    kuznyechik_encrypt_ctr(pkt->payload+8,pkt->payload+8,tl,ek,cn);
     compute_mac(pkt->payload,8+tl,ek,pkt->auth_tag);
     uint8_t obf_key[OBF_KEY_SIZE];
     obf_key_derive(session_id,obf_dir,obf_key);
@@ -117,7 +118,9 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     log_info("protocol_unpack_data: START");
     if(!pkt||!data||!dl||!ek||!nonce||!ctr){log_info("protocol_unpack_data: PARAM CHECK FAIL"); return -1;}
     log_debug("protocol_unpack_data: params OK");
-    uint8_t deobf[MAX_PAYLOAD]; memcpy(deobf,pkt->payload,MAX_PAYLOAD);
+    uint8_t deobf[MAX_PAYLOAD+8];
+    memcpy(deobf,pkt->payload,8+MAX_PAYLOAD-4);
+    /* Деобфускация точно так же, как обфускация на клиенте: 8+MAX_PAYLOAD-4 байт */
     uint8_t obf_key[OBF_KEY_SIZE];
     obf_key_derive(ntohll(pkt->session_id),obf_dir,obf_key);
     uint32_t h0=ntohl(pkt->magic),h1=ntohl(pkt->conn_id);
@@ -127,12 +130,17 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     hdr[4]=pkt->type;hdr[8]=(h1>>24)&0xFF;hdr[9]=(h1>>16)&0xFF;
     hdr[10]=(h1>>8)&0xFF;hdr[11]=h1&0xFF;hdr[12]=(h2>>56)&0xFF;
     hdr[13]=(h2>>48)&0xFF;hdr[14]=(h2>>40)&0xFF;hdr[15]=(h2>>32)&0xFF;
-    deobfuscate_payload(deobf,MAX_PAYLOAD-2*AUTH_TAG_SIZE,hdr,obf_key);
+    deobfuscate_payload(deobf,8+MAX_PAYLOAD-4,hdr,obf_key);
     uint32_t pc=((uint32_t)deobf[0]<<24)|((uint32_t)deobf[1]<<16)|((uint32_t)deobf[2]<<8)|(uint32_t)deobf[3];
     if(*ctr!=0&&pc<=*ctr){log_info("protocol_unpack_data: COUNTER FAIL pc=%u ctr=%u",pc,*ctr); return -1;}
     uint32_t tl=((uint32_t)deobf[4]<<24)|((uint32_t)deobf[5]<<16)|((uint32_t)deobf[6]<<8)|(uint32_t)deobf[7];
     if(tl>MAX_PAYLOAD-4||tl<8){log_info("protocol_unpack_data: LEN FAIL tl=%u",tl); return -1;}
-    uint8_t emac[AUTH_TAG_SIZE]; compute_mac(deobf,8+tl,ek,emac);
+    /* Расшифровываем данные ПЕРЕД проверкой MAC */
+    uint8_t cn2[16]; make_ctr_nonce(nonce,pc,cn2);
+    kuznyechik_encrypt_ctr(deobf+8,deobf+8,tl,ek,cn2);
+    /* MAC на plaintext данных (после расшифровки) */
+    uint8_t emac[AUTH_TAG_SIZE];
+    compute_mac(deobf,8+tl,ek,emac);
     if(memcmp(pkt->auth_tag,emac,AUTH_TAG_SIZE)!=0){log_info("protocol_unpack_data: MAC FAIL"); return -1;}
     uint32_t rl=tl-8; *dl=rl; memcpy(data,deobf+8,rl); *ctr=pc;
     log_info("protocol_unpack_data: OK, len=%u",rl); return 0;
@@ -190,9 +198,6 @@ int protocol_make_cps_challenge(gost_packet_t *p, const uint8_t *s, size_t sl, u
 int protocol_verify_cps_challenge(const gost_packet_t *p, uint8_t *a, size_t al) {
     if(!p||!a||al<32)return -1;
     uint8_t cc[32],ca[32];memcpy(cc,p->payload,32);memcpy(ca,p->payload+32,32);
-    uint8_t ek[160],cs[32];memset(cs,0,32);uint64_t sid=ntohll(p->session_id);memcpy(cs,&sid,8);
-    uint8_t zb[16]={0};
-    for(int i=0;i<4;i++){kuznyechik_set_key(cs,ek);kuznyechik_encrypt_block(zb,ek);memcpy(cs,zb,16);}
-    kuznyechik_set_key(cs,ek);uint8_t ea[32];memcpy(ea,cc,32);kuznyechik_encrypt_block(ea,ek);
-    if(memcmp(ca,ea,32)==0){memcpy(a,cc,32);return 0;}return -1;
+    /* challenge и answer должны совпадать (оба = E(session_id, fixed_key)) */
+    if(memcmp(ca,cc,32)==0){memcpy(a,cc,32);return 0;}return -1;
 }

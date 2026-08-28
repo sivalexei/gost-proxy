@@ -156,8 +156,11 @@ int config_load(gost_config_t *cfg, const char *path) {
         cfg->rate_limit = ival;
 
     if (json_get_string(json, "key", tmp, sizeof(tmp)) == 0) {
+        fprintf(stderr, "[CONFIG] JSON key found: %s\n", tmp);
         strncpy(cfg->key, tmp, sizeof(cfg->key) - 1);
         cfg->key[sizeof(cfg->key) - 1] = '\0';
+    } else {
+        fprintf(stderr, "[CONFIG] JSON key NOT found!\n");
     }
 
     if (json_get_string(json, "log_level", tmp, sizeof(tmp)) == 0) {
