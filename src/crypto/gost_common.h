@@ -93,6 +93,9 @@ typedef struct {
     uint8_t  cps_challenge[32];
     uint8_t  cps_response[32];
     time_t   last_activity;   /* время последней активности */
+    /* Адрес клиента для keepalive */
+    struct sockaddr_in client_addr;
+    socklen_t        client_addr_len;
 } gost_session_t;
 
 #endif /* GOST_COMMON_H */

@@ -411,6 +411,9 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 session = create_session(session_id);
                 if (!session) { pthread_mutex_unlock(&sessions_lock); return; }
             }
+            /* Сохраняем адрес клиента для keepalive */
+            session->client_addr = *client_addr;
+            session->client_addr_len = addr_len;
             gost_packet_t response; protocol_create_handshake(&response, session_id, session->expanded_key);
             ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
             (void)sent;
@@ -466,13 +469,50 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
     }
     pthread_mutex_unlock(&sessions_lock);
 }
+/* Отправка KEEPALIVE всем активным сессиям */
+/* Копия активных сессий для отправки без блокировки */
+typedef struct { uint64_t session_id; struct sockaddr_in addr; socklen_t addr_len; } session_addr_t;
+static void send_keepalive_to_sessions(quic_server_t *qs, session_addr_t *saddrs, int *count) {
+    *count = 0;
+    pthread_mutex_lock(&sessions_lock);
+    for (int i = 0; i < max_sessions; i++) {
+        if (sessions[i].active && sessions[i].session_id) {
+            saddrs[*count].session_id = sessions[i].session_id;
+            saddrs[*count].addr = sessions[i].client_addr;
+            saddrs[*count].addr_len = sessions[i].client_addr_len;
+            (*count)++;
+        }
+    }
+    pthread_mutex_unlock(&sessions_lock);
+    /* Отправка вне блокировки — send может блокировать */
+    for (int j = 0; j < *count; j++) {
+        gost_packet_t ka;
+        memset(&ka, 0, sizeof(ka));
+        ka.magic = htonl(GOST_PROXY_MAGIC);
+        ka.type = PKT_KEEPALIVE;
+        ka.session_id = saddrs[j].session_id;
+        ssize_t sent = quic_server_send(qs, &saddrs[j].addr, saddrs[j].addr_len,
+                                        (const uint8_t*)&ka, sizeof(ka));
+        if (sent < 0) log_debug("KEEPALIVE send failed: %s", strerror(errno));
+    }
+}
+
 static void* server_thread(void *arg) {
     quic_server_t *qs = (quic_server_t *)arg;
     uint8_t buffer[BUFFER_SIZE]; struct sockaddr_in client_addr; socklen_t addr_len;
+    int keepalive_counter = 0;
+    session_addr_t saddrs[MAX_PROXY_CONNS];
     while (running) {
         addr_len = sizeof(client_addr);
         ssize_t recv_len = quic_server_recv(qs, buffer, BUFFER_SIZE, &client_addr, &addr_len, 1000);
         if (recv_len > 0) handle_packet(qs, &client_addr, addr_len, buffer, recv_len);
+        keepalive_counter++;
+        if (keepalive_counter >= 30) {  /* каждые ~30с */
+            int count;
+            send_keepalive_to_sessions(qs, saddrs, &count);
+            if (count > 0) log_debug("KEEPALIVE sent to %d sessions", count);
+            keepalive_counter = 0;
+        }
     }
     return NULL;
 }
