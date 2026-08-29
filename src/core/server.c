@@ -106,8 +106,24 @@ static inline void session_hash_remove(uint64_t sid, int idx) {
 /* Удаление сессии по индексу */
 static void session_remove(int idx) {
     if (idx < 0 || idx >= max_sessions) return;
-    if (sessions[idx].session_id != 0)
-        session_hash_remove(sessions[idx].session_id, idx);
+    uint64_t sid = sessions[idx].session_id;
+    if (sid != 0) {
+        session_hash_remove(sid, idx);
+        /* Очищаем proxy_conns для этой session_id — TCP соединение неактивно */
+        pthread_mutex_lock(&proxy_lock);
+        for (int i = 0; i < MAX_PROXY_CONNS; i++) {
+            if (proxy_conns[i].active && proxy_conns[i].session_id == sid) {
+                if (proxy_conns[i].tcp_fd >= 0) {
+                    log_debug("Expire: close tcp_fd=%d for expired session %llu",
+                        proxy_conns[i].tcp_fd, (unsigned long long)sid);
+                    close(proxy_conns[i].tcp_fd);
+                    proxy_conns[i].tcp_fd = -1;
+                }
+                proxy_conns[i].active = 0;
+            }
+        }
+        pthread_mutex_unlock(&proxy_lock);
+    }
     sessions[idx].active = 0;
     sessions[idx].session_id = 0;
     sessions[idx].next_slot = -1;

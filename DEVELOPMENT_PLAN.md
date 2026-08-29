@@ -5,7 +5,7 @@
 ✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, CPS handshake, session переиспользование, DNS на сервере
 ✅ **Работает:** Двусторонняя CMAC-аутентификация (client/server nonce, CMAC(PSK, client_nonce || server_nonce))
 ✅ **Работает:** Retry handshake с экспоненциальным backoff (config: handshake_timeout_ms, handshake_max_retries)
-⚠️ **Осталось:** IPv6 (SOCKS5 listener), таймауты сессий (очистка), интеграционные тесты (MAC/replay), санитайзеры
+⚠️ **Осталось:** IPv6 (SOCKS5 listener), интеграционные тесты (MAC/replay), санитайзеры
 
 ---
 
@@ -61,10 +61,11 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Функция: `send_keepalive_to_sessions()` server.c:537, вызов из main loop:580.
 Файлы: server.c
 
-### 1.3. Таймауты сессий (2-3 часа) ⚠️ **ЧАСТИЧНО**
+### 1.3. Таймауты сессий (2-3 часа) ✅ **ВЫПОЛНЕНО**
 Проблема: session_timeout из конфига не использовался для очистки.
-Статус: Проверка `last_activity > session_timeout` есть (server.c:134).
-Осталось: Удаление просроченных сессий из массива, очистка conn_id.
+Решение: `expire_sessions()` очищает сессии и proxy_conns (TCP fd close).
+Функция: `session_remove(idx)` теперь закрывает tcp_fd и сбрасывает proxy_conns.
+Тест: `expire_sessions()` вызывается в main loop (lines 454, 457, 488, 492, 599).
 Файлы: server.c
 
 ### 1.4. Обфускация: mismatch длины obf/deobf (1 час) ✅ **ВЫПОЛНЕНО**
@@ -174,10 +175,10 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 | Этап | Что | Статус | Оценка |
 |------|-----|--------|--------|
-| 1 | Стабильность (P0) | 3/4 выполнено | ~0.5 дн. |
+| 1 | Стабильность (P0) | 4/4 выполнено | ✅ |
 | 2 | Архитектура (P1) | 2/3 выполнено | ~2-3 дн. |
 | 3 | Безопасность (P2) | 3/3 выполнено | ✅ |
 | 4 | Эксплуатация (P3) | 1/2 выполнено | ~2-3 дн. |
 | 5 | Тесты (параллельно) | 0.5/3 выполнено | ~3-4 дн. |
 
-**Суммарно:** ~6-9 дн. до готовности (vs ~4-6 нед. изначально).
+**Суммарно:** ~4-6 дн. до готовности (vs ~4-6 нед. изначально).
