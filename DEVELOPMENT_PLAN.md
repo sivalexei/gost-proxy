@@ -5,7 +5,7 @@
 ✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, CPS handshake, session переиспользование, DNS на сервере
 ✅ **Работает:** Двусторонняя CMAC-аутентификация (client/server nonce, CMAC(PSK, client_nonce || server_nonce))
 ✅ **Работает:** Retry handshake с экспоненциальным backoff (config: handshake_timeout_ms, handshake_max_retries)
-⚠️ **Осталось:** IPv6, epoll, keepalive от сервера, таймауты сессий, тесты
+⚠️ **Осталось:** IPv6 (SOCKS5 listener), таймауты сессий (очистка), интеграционные тесты (MAC/replay), санитайзеры
 
 ---
 
@@ -55,39 +55,46 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Решение: Требовать sizeof(gost_packet_t), проверять n >= 5+dlen+2.
 Файлы: server.c, socks5.c, session.c
 
+### 1.2. Keepalive от сервера к клиенту (2-3 часа) ✅ **ВЫПОЛНЕНО**
+Проблема: Клиент отправляет KEEPALIVE, сервер не отвечает.
+Решение: Сервер шлёт PKT_KEEPALIVE обратно каждые 30 сек.
+Функция: `send_keepalive_to_sessions()` server.c:537, вызов из main loop:580.
+Файлы: server.c
+
+### 1.3. Таймауты сессий (2-3 часа) ⚠️ **ЧАСТИЧНО**
+Проблема: session_timeout из конфига не использовался для очистки.
+Статус: Проверка `last_activity > session_timeout` есть (server.c:134).
+Осталось: Удаление просроченных сессий из массива, очистка conn_id.
+Файлы: server.c
+
 ### 1.4. Обфускация: mismatch длины obf/deobf (1 час) ✅ **ВЫПОЛНЕНО**
 Проблема: клиент obfuscate(8+tl), сервер deobfuscate(8+MAX_PAYLOAD-4) — stream рассинхрон.
 Решение: клиент обфусцирует 8+MAX_PAYLOAD-4 целиком.
+Тест: test_obf_simple.c → 730 errors → 0.
 Файлы: session.c → protocol_pack_data()
-
-### 1.2. Keepalive от сервера к клиенту (2-3 часа)
-Проблема: Клиент отправляет KEEPALIVE, сервер не отвечает.
-Решение: Сервер шлёт PKT_KEEPALIVE обратно каждые 30 сек.
-Файлы: server.c
-
-### 1.3. Таймауты сессий (2-3 часа)
-Проблема: session_timeout из конфига не используется.
-Решение: Проверка в main loop, очистка просроченных сессий.
-Файлы: server.c
 
 ---
 
 ## Этап 2. Архитектура (P1)
 
-### 2.1. DNS-кэш (1 день)
+### 2.1. DNS-кэш (1 день) ✅ **ВЫПОЛНЕНО**
 Проблема: getaddrinfo() на каждом CONNECT.
 Решение: Лёгкий кэш с TTL, LRU-вытеснение.
-Файлы: server.c, socks5.c
+Файлы: dns_cache.h, dns_cache.c, server.c, socks5.c
 
-### 2.2. IPv6 (2-3 дня)
-Презаема: IPv4-only, gethostbyname().
-Решение: getaddrinfo() с поддержкой A+AAAA, dual-stack sockets.
-Файлы: socks5.c, server.c, quic_layer.c
+### 2.2. IPv6 (2-3 дня) ⚠️ **ЧАСТИЧНО**
+Проблема: клиент SOCKS5 слушает только IPv4.
+Статус:
+- ✅ Сервер UDP: `bind_to_addr()` поддерживает AF_INET6 (server.c:654-655)
+- ✅ Ресолвинг target: getaddrinfo() + AF_INET6 (quic_layer.c:92-176)
+- ⚠️ Клиентский SOCKS5 listener: только AF_INET (socks5.c:265)
+Осталось: SOCKS5 listener на AF_INET6 для приёма IPv6-подключений от curl.
+Файлы: socks5.c
 
-### 2.3. epoll вместо poll (3-4 дня)
+### 2.3. epoll вместо poll (3-4 дня) ✅ **ВЫПОЛНЕНО**
 Проблема: poll 100мс → 100% CPU.
 Решение: epoll event loop.
-Файлы: socks5.c, quic_layer.c
+Файлы: server.c, quic_layer.c
 
 ---
 
@@ -129,39 +136,48 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 - Фикс CMAC-бага: `server_nonce = {0}` при проверке auth клиента (до генерации реального nonce)
 Файлы: server.c, config.h, config.c
 
-### 4.2. Graceful shutdown (2-3 часа)
+### 4.2. Graceful shutdown (2-3 часа) ✅ **ВЫПОЛНЕНО**
 Проблема: SIGINT убивает процессы без очистки.
-Решение: Обработка SIGINT, отправка DISCONNECT.
+Статус: Сервер и клиент обрабатывают SIGINT/SIGTERM, закрывают сокеты.
+Сервер: signal handler закрывает socket, ставит `qs_obj.active=0` (server.c:234,608-612).
+Клиент: signal handler (client.c:38,71-75), graceful close в quic_client_close().
+Осталось: Отправка DISCONNECT сессиям перед завершением.
 Файлы: server.c, client.c
 
 ---
 
 ## Этап 5. Тесты (параллельно)
 
-### 5.1. Юнит-тесты протокола
+### 5.1. Юнит-тесты протокола ⚠️ **ЧАСТИЧНО**
+Статус: Есть crypto-тесты (gost_test, test_crypto, ctr_test, test_prng).
+Осталось:
 - pack → unpack на всех длинах
 - Повреждённый MAC, повтор счётчика
 - Обрезанные пакеты
+Файлы: src/crypto/*test*.c, test_pack*.c
 
-### 5.2. Интеграционный тест
-- Сервер + клиент → curl через прокси
-- Сверить контрольную сумму
-- Проверить CPS handshake
+### 5.2. Интеграционный тест ⚠️ **ЧАСТИЧНО**
+Статус: `tests/test-https.sh` — HTTP/HTTPS через SOCKS5-прокси с curl.
+Осталось:
+- Сверить контрольную сумму (upload + download)
+- Проверка CPS handshake в CI
+Файлы: tests/
 
-### 5.3. Санитайзеры
-- fsanitize=address,undefined
-- -Werror в CI
+### 5.3. Санитайзеры ❌ **НЕ ВЫПОЛНЕНО**
+- ❌ fsanitize=address,undefined в Makefile
+- ❌ -Werror в CI
+Файлы: Makefile, .github/workflows/ (если будет)
 
 ---
 
 ## Сводка
 
-| Этап | Что | Оценка |
-|------|-----|--------|
-| 1 | Стабильность (P0) | 1.5-2 дня |
-| 2 | Архитектура (P1) | 5-7 дней |
-| 3 | Безопасность (P2) | 4-6 дней |
-| 4 | Эксплуатация (P3) | 1-2 дня |
-| 5 | Тесты (параллельно) | 3-4 дня |
+| Этап | Что | Статус | Оценка |
+|------|-----|--------|--------|
+| 1 | Стабильность (P0) | 3/4 выполнено | ~0.5 дн. |
+| 2 | Архитектура (P1) | 2/3 выполнено | ~2-3 дн. |
+| 3 | Безопасность (P2) | 3/3 выполнено | ✅ |
+| 4 | Эксплуатация (P3) | 1/2 выполнено | ~2-3 дн. |
+| 5 | Тесты (параллельно) | 0.5/3 выполнено | ~3-4 дн. |
 
-**Суммарно:** ~4-6 недель на одного разработчика.
+**Суммарно:** ~6-9 дн. до готовности (vs ~4-6 нед. изначально).
