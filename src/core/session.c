@@ -108,7 +108,8 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     hdr[13]=(h2>>48)&0xFF;hdr[14]=(h2>>40)&0xFF;hdr[15]=(h2>>32)&0xFF;
     log_info("CLIENT hdr=%02x%02x%02x%02x %02x %02x%02x%02x%02x %02x%02x%02x%02x", hdr[0],hdr[1],hdr[2],hdr[3],hdr[4],hdr[8],hdr[9],hdr[10],hdr[11],hdr[12],hdr[13],hdr[14],hdr[15]);
     log_info("CLIENT obf_key=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", obf_key[0],obf_key[1],obf_key[2],obf_key[3],obf_key[4],obf_key[5],obf_key[6],obf_key[7],obf_key[8],obf_key[9],obf_key[10],obf_key[11],obf_key[12],obf_key[13],obf_key[14],obf_key[15]);
-    obfuscate_payload(pkt->payload,8+tl,hdr,obf_key);
+    /* Обфусцируем весь payload, чтобы на сервере deobfuscate шёл по всему диапазону */
+    obfuscate_payload(pkt->payload,8+MAX_PAYLOAD-4,hdr,obf_key);
     return 0;
 }
 int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
