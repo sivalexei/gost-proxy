@@ -7,12 +7,20 @@ SOCKS5-прокси с шифрованием ГОСТ Р 34.12-2015 "Кузне
 - **Шифрование** ГОСТ Р 34.12-2015 (Кузнечик) — C-реализация по RFC 7801
 - **QUIC-транспорт** поверх UDP с рукопожатием, keepalive от обеих сторон и мультиплексированием
 - **CPS (Chaffing/Pretense System)** — обфускация трафика для маскировки под случайный
-- **Auth-tag** — encrypt-then-MAC для проверки целостности
+- **Двусторонняя CMAC-аутентификация** — client/server nonce с проверкой подлинности обеих сторон
+- **Auth-tag** — encrypt-then-MAC для проверки целостности данных
 - **conn_id** — изолированные параллельные соединения
 - **SOCKS5-прокси** на клиенте (127.0.0.1:1081)
 - **DNS на сервере** — клиент шлёт домен, сервер резолвит через getaddrinfo()
 - **Переиспользование сессий** — free list + тайм-ауты
 - **systemd-юниты** для автоматического запуска
+
+## Протокол рукопожатия (QUIC)
+
+1. **Client → Server**: `PKT_HANDSHAKE` с `session_id`, `client_nonce` (8 байт, из `/dev/urandom`)
+2. **Server → Client**: `PKT_HANDSHAKE` с `session_id`, `server_nonce` (8 байт, из `/dev/urandom`), `auth_tag`
+3. **Auth**: `auth_tag = CMAC(PSK, client_nonce || server_nonce)` — двусторонняя проверка подлинности через ГОСТ-Кузнечик
+4. При неверном ключе — соединение отклоняется с `CMAC mismatch`
 
 ## Требования
 
@@ -50,6 +58,36 @@ make clean        # очистка
 ```bash
 curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ```
+
+### Конфигурация клиента (retry)
+
+```json
+{
+  "server_ip": "10.0.0.1",
+  "server_port": 10443,
+  "handshake_timeout_ms": 1000,
+  "handshake_max_retries": 5,
+  "key": "0123456789ABCDEF..."
+}
+```
+
+- `handshake_timeout_ms`: базовая задержка между попытками (по умолч. 1000)
+- `handshake_max_retries`: макс. попыток (по умолч. 5)
+- Экспоненциальный backoff: 1s → 2s → 4s → 8s → 16s → 32s (макс. 60s)
+
+### Конфигурация сервера (rate limiting)
+
+```json
+{
+  "rate_limit": 10,       /* токенов в секунду, по умолч. 10 */
+  "rate_burst": 20,       /* макс. burst (размер бакета), по умолч. 20 */
+  "key": "0123456789ABCDEF..."
+}
+```
+
+- **Token bucket** per IP: каждый пакет (HANDSHAKE, DATA) отнимает 1 токен
+- Refill: `rate_limit` токенов/сек, refill до `rate_burst`
+- Превышен лимит — сервер тихо отбрасывает пакет (log: `Rate limit exceeded`)
 
 ## Архитектура
 
@@ -122,10 +160,12 @@ curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ## Безопасность
 
 - Ключ 256 бит, блок 128 бит, 10 раундов
+- **Двусторонняя CMAC-аутентификация** — client/server nonce, `CMAC(PSK, client_nonce || server_nonce)`
 - CTR-режим, encrypt-then-MAC
 - Nonce из `/dev/urandom`
 - conn_id изолирует параллельные соединения
 - CPS handshake — challenge/response верификация
+- При неверном ключе — соединение **отклоняется** (CMAC mismatch)
 
 ## Разработка
 

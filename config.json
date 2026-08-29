@@ -1,7 +1,1 @@
-{
-  "server_ip": "109.122.195.152",
-  "server_port": 10443,
-  "key": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
-  "log_level": "info",
-  "log_file": "/tmp/gost-proxy-client.log"
-}
+{"bind_addr":"0.0.0.0","bind_port":10443,"key":"0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF","log_level":"debug"}

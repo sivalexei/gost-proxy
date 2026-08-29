@@ -16,6 +16,7 @@
 #include "kuznyechik.h"
 #include "gost_common.h"
 #include "protocol.h"
+#include "dns_cache.h"
 #include "log.h"
 #include "socks5.h"
 
@@ -198,21 +199,27 @@ static void* socks5_client_thread(void *arg) {
     if (n<4||buf[0]!=0x05||buf[1]!=0x01){close(fd);return NULL;}
     char th[256]={0}; uint16_t tp=0;
     switch(buf[3]){
-        case 0x01:{struct in_addr a;memcpy(&a,&buf[4],4);inet_ntop(AF_INET,&a,th,sizeof(th));tp=(buf[8]<<8)|buf[9];break;}
-        case 0x03:{uint8_t d=buf[4];memcpy(th,&buf[5],d);th[d]='\0';tp=(buf[5+d]<<8)|buf[5+d+1];break;}
+        case 0x01:{ /* IP v4: ATYP(1) + ADDR(4) + PORT(2) = 7 байт */
+            if (n < 10){close(fd);return NULL;}
+            struct in_addr a;memcpy(&a,&buf[4],4);inet_ntop(AF_INET,&a,th,sizeof(th));tp=(buf[8]<<8)|buf[9];break;}
+        case 0x03:{ /* Domain: ATYP(1) + DLEN(1) + ADDR(dlen) + PORT(2) = 4+dlen */
+            uint8_t d=buf[4];
+            if (d < 1 || d > 255 || n < 5 + d + 2){close(fd);return NULL;}
+            memcpy(th,&buf[5],d);th[d]='\0';tp=(buf[5+d]<<8)|buf[5+d+1];break;}
+        case 0x04:{ /* IP v6: ATYP(1) + ADDR(16) + PORT(2) = 19 */
+            if (n < 22){close(fd);return NULL;}
+            struct in6_addr a6;memcpy(&a6,&buf[4],16);inet_ntop(AF_INET6,&a6,th,sizeof(th));tp=(buf[20]<<8)|buf[21];break;}
         default:{uint8_t e[]={0x05,0x08,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;}
     }
     log_info("SOCKS5 CONNECT %s:%u",th,tp);
     uint32_t mcid=__sync_fetch_and_add(&next_cid,1);
     log_info("SOCKS5: sending CONNECT, session_id=%llu, cid=%u", (unsigned long long)proxy_session.session_id, mcid);
-    struct in_addr ta;memset(&ta,0,sizeof(ta));
-    /* Resolve */
-    struct addrinfo hints={0},*res=NULL;hints.ai_family=AF_INET;hints.ai_socktype=SOCK_STREAM;
-    if (getaddrinfo(th,NULL,&hints,&res)!=0) {
+    struct sockaddr_in sin={0};
+    /* DNS-кэш с LRU и TTL 1 сутки */
+    if (dns_cache_lookup(th, &sin)!=0) {
         uint8_t e[]={0x05,0x04,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;
     }
-    struct sockaddr_in *sin=(struct sockaddr_in*)res->ai_addr;ta=sin->sin_addr;freeaddrinfo(res);
-    uint8_t cd[8];cd[0]=1;cd[1]=1;memcpy(&cd[2],&ta.s_addr,4);cd[6]=(uint8_t)(tp>>8);cd[7]=(uint8_t)tp;
+    uint8_t cd[8];cd[0]=1;cd[1]=1;memcpy(&cd[2],&sin.sin_addr.s_addr,4);cd[6]=(uint8_t)(tp>>8);cd[7]=(uint8_t)tp;
     uint32_t csc=0;
     log_info("SOCKS5: calling tunnel_send, dlen=8, cid=%u", mcid);
     int ts = tunnel_send(cd,8,mcid,&csc);

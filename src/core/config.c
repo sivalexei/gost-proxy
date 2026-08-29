@@ -84,7 +84,8 @@ void config_defaults(gost_config_t *cfg) {
     cfg->port = 10443;
     cfg->max_sessions = 256;
     cfg->session_timeout = 300;
-    cfg->rate_limit = 1000;
+    cfg->rate_limit = 10.0;      /* 10 пакетов в секунду */
+    cfg->rate_burst = 20;       /* burst до 20 пакетов */
     /* Ключ по умолчанию НЕ задаётся — должен быть указан явно или в GOST_PROXY_KEY */
     strcpy(cfg->log_level, "info");
     strcpy(cfg->log_file, "/var/log/gost-proxy/server.log");
@@ -153,7 +154,16 @@ int config_load(gost_config_t *cfg, const char *path) {
         cfg->session_timeout = ival;
 
     if (json_get_int(json, "rate_limit", &ival) == 0)
-        cfg->rate_limit = ival;
+        cfg->rate_limit = (double)ival;
+
+    if (json_get_int(json, "rate_burst", &ival) == 0)
+        cfg->rate_burst = ival;
+
+    if (json_get_int(json, "handshake_timeout_ms", &ival) == 0)
+        cfg->handshake_timeout_ms = ival;
+
+    if (json_get_int(json, "handshake_max_retries", &ival) == 0)
+        cfg->handshake_max_retries = ival;
 
     if (json_get_string(json, "key", tmp, sizeof(tmp)) == 0) {
         fprintf(stderr, "[CONFIG] JSON key found: %s\n", tmp);

@@ -228,3 +228,18 @@ void kuznyechik_encrypt_ecb(
         encrypt_block_c(out + offset, expanded_key);
     }
 }
+
+/* HMAC на базе Kuznyechik: CMAC(PSK, client_nonce || server_nonce) */
+void kuznyechik_compute_auth(const uint8_t *expanded_key,
+                              const uint8_t *client_nonce,
+                              const uint8_t *server_nonce,
+                              uint8_t *auth_out)
+{
+    uint8_t buf[KUZNYECHIK_BLOCK_SIZE];
+    /* client_nonce (8 байт) || server_nonce (8 байт) = 16 байт */
+    memcpy(buf, client_nonce, 8);
+    memcpy(buf + 8, server_nonce, 8);
+    /* Шифруем: CMAC = E_K(client_nonce || server_nonce) */
+    encrypt_block_c(buf, expanded_key);
+    memcpy(auth_out, buf, AUTH_TAG_SIZE);
+}

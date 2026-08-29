@@ -20,6 +20,7 @@ void obfuscate_payload(uint8_t *payload, size_t payload_len,
                        const uint8_t *header, const uint8_t *obf_key) {
     /* Генерируем псевдослучайный ключ потока из header и session-ключа */
     uint8_t stream[256];
+    memset(stream, 0, sizeof(stream));
     uint32_t idx = 0;
 
     /* Инициализация: header (16 байт) */

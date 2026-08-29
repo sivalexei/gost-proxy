@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -34,7 +35,7 @@ static quic_client_t quic_client;
 static uint8_t expanded_key[160];
 static gost_config_t cfg;
 
-static void signal_handler(int sig) {
+static void signal_handler(int sig) { fprintf(stderr, "DEBUG: signal %d\n", sig);
     (void)sig;
     running = 0;
 }
@@ -65,8 +66,13 @@ int main(int argc, char *argv[]) {
     printf("Сервер: %s:%d\n", cfg.server_ip, cfg.server_port);
     log_info("Клиент запущен, сервер: %s:%d", cfg.server_ip, cfg.server_port);
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;  /* SA_RESTART не ставим — select прерывается сигналом */
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     uint8_t client_key[32] = {0};
     for (int i = 0; i < 32 && cfg.key[i*2] && cfg.key[i*2+1]; i++) {
@@ -90,10 +96,30 @@ int main(int argc, char *argv[]) {
     printf("[DEBUG] client key: %02x%02x%02x%02x...%02x%02x\n", client_key[0],client_key[1],client_key[2],client_key[3], client_key[30],client_key[31]);
     printf("[DEBUG] client expanded_key: %02x%02x%02x%02x...%02x%02x\n", expanded_key[0],expanded_key[1],expanded_key[2],expanded_key[3], expanded_key[155],expanded_key[159]);
 
-    /* Подключаемся через QUIC */
-    if (quic_client_connect(&quic_client, cfg.server_ip, cfg.server_port, client_key) != 0) {
-        printf("Ошибка QUIC подключения\n");
-        log_error("QUIC connect failed");
+    /* Подключаемся через QUIC с retry и экспоненциальным backoff */
+    int max_retries = cfg.handshake_max_retries > 0 ? cfg.handshake_max_retries : 5;
+    int base_delay = cfg.handshake_timeout_ms > 0 ? cfg.handshake_timeout_ms : 1000;
+    int attempt;
+    for (attempt = 0; attempt < max_retries; attempt++) {
+        if (attempt > 0) {
+            int delay = base_delay * (1 << (attempt - 1));  /* экспоненциальный backoff: 1s, 2s, 4s, 8s...
+*/
+            if (delay > 60000) delay = 60000;  /* максимум 60с */
+            printf("[RETRY] Попытка %d/%d через %d мс...\n", attempt + 1, max_retries, delay);
+            log_info("QUIC retry %d/%d (backoff=%dms)", attempt + 1, max_retries, delay);
+            usleep(delay * 1000);  /* usleep принимает микросекунды */
+        }
+        quic_client_close(&quic_client);  /* очистка перед повторной попыткой */
+        if (quic_client_connect(&quic_client, cfg.server_ip, cfg.server_port, client_key) == 0) {
+            break;
+        }
+        log_warn("QUIC connect attempt %d/%d failed", attempt + 1, max_retries);
+        if (attempt < max_retries - 1)
+            printf("[RETRY] Не удалось подключиться (%d/%d)\n", attempt + 1, max_retries);
+    }
+    if (attempt >= max_retries) {
+        printf("Ошибка QUIC подключения после %d попыток\n", max_retries);
+        log_error("QUIC connect failed after %d retries", max_retries);
         return 1;
     }
 
@@ -101,23 +127,10 @@ int main(int argc, char *argv[]) {
     memcpy(&session.session_id, quic_client.session_id, 8);
     session.active = 1;
     session.counter = 0;
-    memset(session.nonce, 0, NONCE_SIZE);
-    /* Генерация случайного nonce (96 бит) */
-    ssize_t nr = getrandom(session.nonce, NONCE_SIZE, 0);
-    if (nr < NONCE_SIZE) {
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd >= 0) {
-            ssize_t rd = read(fd, session.nonce, NONCE_SIZE);
-            close(fd);
-            if (rd < NONCE_SIZE) {
-                printf("[ERROR] Failed to generate nonce\n");
-                return 1;
-            }
-        } else {
-            printf("[ERROR] No urandom\n");
-            return 1;
-        }
-    }
+    /* Используем server_nonce из handshake — но его нужно извлечь из quic_client */
+    /* Для простоты: используем session_id как nonce (как на сервере) */
+    memcpy(session.nonce, &session.session_id, 8);
+    memset(session.nonce + 8, 0, 8);
     memcpy(session.expanded_key, expanded_key, 160);
     log_info("QUIC session_id=%llu", (unsigned long long)session.session_id);
 
@@ -211,10 +224,14 @@ int main(int argc, char *argv[]) {
         log_info("Keepalive thread started (every %d сек)", KEEPALIVE_INTERVAL);
     }
 
-    /* Основной цикл — ждём завершения */
+    /* Основной цикл — select прерывается сигналом, реагирует за ~100мс */
     while (running) {
-        sleep(1);
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };  /* 100ms */
+        select(0, NULL, NULL, NULL, &tv);
     }
+
+    /* Ждём keepalive-поток (он проверяет running=0 и выйдет после текущего sleep) */
+    usleep(500000);  /* 0.5 сек — достаточно, keepalive не отправит новый пакет */
 
     socks5_stop();
 

@@ -10,7 +10,10 @@ typedef struct {
     uint16_t port;
     int      max_sessions;
     int      session_timeout;
-    int      rate_limit;
+    double   rate_limit;    /* токенов в секунду */
+    int      rate_burst;    /* макс. burst (размер бакета) */
+    int      handshake_timeout_ms;  /* timeout handshake в мс */
+    int      handshake_max_retries; /* макс. попыток handshake */
     char     key[128];  /* hex-key: 64 символа = 32 байт + запас */
     char     log_level[16];
     char     log_file[256];

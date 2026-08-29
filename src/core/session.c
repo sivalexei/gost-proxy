@@ -55,11 +55,11 @@ void protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len, uin
         if (padding_len == 0) return;
     }
     prng_seed_u64(sid);
-    /* Вставляем padding ПОСЛЕ данных, не перед ними */
-    memmove(p + 8 + (*dl) + padding_len, p + 8, (size_t)(*dl));
-    for (uint32_t i = 0; i < padding_len; i++)
-        p[8 + (*dl) + i] = (uint8_t)prng_next();
+    /* Сдвигаем данные вправо на padding_len, пишем padding НАЧАЛО */
+    memmove(p + 8 + padding_len, p + 8, (size_t)(*dl));
     *dl += padding_len;
+    for (uint32_t i = 0; i < padding_len; i++)
+        p[8 + i] = (uint8_t)prng_next();
 }
 static void compute_mac(const uint8_t *pay, size_t plen, const uint8_t *ek, uint8_t *mac) {
     uint8_t b[16]; memset(b,0,16);
@@ -83,20 +83,16 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     const uint8_t *data, size_t data_len, const uint8_t *ek, const uint8_t *nonce,
     uint32_t *counter, uint8_t obf_dir) {
     if(!pkt||!data||!ek||!nonce||!counter)return -1;
-    log_info("PACK_DATA: sid=%llu(0x%016llx), dlen=%zu, obf_dir=%u", (unsigned long long)session_id, (unsigned long long)session_id, (unsigned long long)data_len, obf_dir);
-    if(data_len>MAX_PAYLOAD-4-PADDING_MIN_BYTES)return -1;
     memset(pkt,0,sizeof(gost_packet_t));
     pkt->magic=htonl(GOST_PROXY_MAGIC); pkt->type=PKT_DATA;
     pkt->conn_id=htonl(conn_id); pkt->session_id=htonll(session_id);
     (*counter)+=2; uint32_t pc=*counter;
-    pkt->payload[0]=(pc>>24)&0xFF;pkt->payload[1]=(pc>>16)&0xFF;
-    pkt->payload[2]=(pc>>8)&0xFF;pkt->payload[3]=pc&0xFF;
     uint32_t plen=protocol_compute_padding_len(session_id);
-    memcpy(pkt->payload+8,data,data_len); uint32_t pdl=(uint32_t)data_len;
+    uint32_t pdl=(uint32_t)data_len;
+    memcpy(pkt->payload+8,data,data_len);
     protocol_insert_padding(pkt->payload+8,&pdl,plen,session_id);
-    uint32_t tl=pdl;  /* tl = длина после вставки padding */
-    pkt->payload[4]=(tl>>24)&0xFF;pkt->payload[5]=(tl>>16)&0xFF;
-    pkt->payload[6]=(tl>>8)&0xFF;pkt->payload[7]=tl&0xFF;
+    uint32_t tl=pdl;
+    log_info("PACK_DATA: sid=%llu dlen=%zu plen=%u tl=%u obf_dir=%u", (unsigned long long)session_id, (unsigned long long)data_len, plen, tl, obf_dir);
     /* Шифруем payload[8..8+tl-1], payload[0..7] = plaintext */
     uint8_t cn[16]; make_ctr_nonce(nonce,pc,cn);
     kuznyechik_encrypt_ctr(pkt->payload+8,pkt->payload+8,tl,ek,cn);
@@ -110,6 +106,8 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     hdr[4]=0x02;hdr[8]=(h1>>24)&0xFF;hdr[9]=(h1>>16)&0xFF;
     hdr[10]=(h1>>8)&0xFF;hdr[11]=h1&0xFF;hdr[12]=(h2>>56)&0xFF;
     hdr[13]=(h2>>48)&0xFF;hdr[14]=(h2>>40)&0xFF;hdr[15]=(h2>>32)&0xFF;
+    log_info("CLIENT hdr=%02x%02x%02x%02x %02x %02x%02x%02x%02x %02x%02x%02x%02x", hdr[0],hdr[1],hdr[2],hdr[3],hdr[4],hdr[8],hdr[9],hdr[10],hdr[11],hdr[12],hdr[13],hdr[14],hdr[15]);
+    log_info("CLIENT obf_key=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", obf_key[0],obf_key[1],obf_key[2],obf_key[3],obf_key[4],obf_key[5],obf_key[6],obf_key[7],obf_key[8],obf_key[9],obf_key[10],obf_key[11],obf_key[12],obf_key[13],obf_key[14],obf_key[15]);
     obfuscate_payload(pkt->payload,8+tl,hdr,obf_key);
     return 0;
 }
@@ -130,11 +128,14 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     hdr[4]=pkt->type;hdr[8]=(h1>>24)&0xFF;hdr[9]=(h1>>16)&0xFF;
     hdr[10]=(h1>>8)&0xFF;hdr[11]=h1&0xFF;hdr[12]=(h2>>56)&0xFF;
     hdr[13]=(h2>>48)&0xFF;hdr[14]=(h2>>40)&0xFF;hdr[15]=(h2>>32)&0xFF;
+    log_info("SERVER hdr=%02x%02x%02x%02x %02x %02x%02x%02x%02x %02x%02x%02x%02x", hdr[0],hdr[1],hdr[2],hdr[3],hdr[4],hdr[8],hdr[9],hdr[10],hdr[11],hdr[12],hdr[13],hdr[14],hdr[15]);
+    log_info("SERVER obf_key=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", obf_key[0],obf_key[1],obf_key[2],obf_key[3],obf_key[4],obf_key[5],obf_key[6],obf_key[7],obf_key[8],obf_key[9],obf_key[10],obf_key[11],obf_key[12],obf_key[13],obf_key[14],obf_key[15]);
     deobfuscate_payload(deobf,8+MAX_PAYLOAD-4,hdr,obf_key);
+    log_debug("protocol_unpack_data: after deobf payload[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x", deobf[0],deobf[1],deobf[2],deobf[3],deobf[4],deobf[5],deobf[6],deobf[7]);
     uint32_t pc=((uint32_t)deobf[0]<<24)|((uint32_t)deobf[1]<<16)|((uint32_t)deobf[2]<<8)|(uint32_t)deobf[3];
     if(*ctr!=0&&pc<=*ctr){log_info("protocol_unpack_data: COUNTER FAIL pc=%u ctr=%u",pc,*ctr); return -1;}
     uint32_t tl=((uint32_t)deobf[4]<<24)|((uint32_t)deobf[5]<<16)|((uint32_t)deobf[6]<<8)|(uint32_t)deobf[7];
-    if(tl>MAX_PAYLOAD-4||tl<8){log_info("protocol_unpack_data: LEN FAIL tl=%u",tl); return -1;}
+    if(tl>MAX_PAYLOAD-4||tl<8){log_info("protocol_unpack_data: LEN FAIL tl=%u (expected ~8-128)",tl); return -1;}
     /* Расшифровываем данные ПЕРЕД проверкой MAC */
     uint8_t cn2[16]; make_ctr_nonce(nonce,pc,cn2);
     kuznyechik_encrypt_ctr(deobf+8,deobf+8,tl,ek,cn2);
@@ -145,7 +146,8 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     uint32_t rl=tl-8; *dl=rl; memcpy(data,deobf+8,rl); *ctr=pc;
     log_info("protocol_unpack_data: OK, len=%u",rl); return 0;
 }
-int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uint8_t *ek) {
+int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uint8_t *ek,
+    const uint8_t *client_nonce, const uint8_t *server_nonce) {
     if(!pkt||!ek)return -1;
     memset(pkt,0,sizeof(gost_packet_t));
     pkt->magic=htonl(GOST_PROXY_MAGIC);pkt->type=PKT_HANDSHAKE;

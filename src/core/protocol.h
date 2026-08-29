@@ -66,11 +66,15 @@ int protocol_unpack_data(
     uint8_t obf_key_dir
 );
 
-/* Формирование handshake */
+/* Формирование handshake с аутентификацией
+ * client_nonce и server_nonce — по 8 байт каждый
+ */
 int protocol_create_handshake(
     gost_packet_t *pkt,
     uint64_t session_id,          /* host byte order */
-    const uint8_t *expanded_key
+    const uint8_t *expanded_key,
+    const uint8_t *client_nonce,
+    const uint8_t *server_nonce
 );
 
 #endif /* PROTOCOL_H */

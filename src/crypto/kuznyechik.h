@@ -39,4 +39,10 @@ void kuznyechik_encrypt_ecb(
     const uint8_t *expanded_key
 );
 
+/* HMAC на базе Kuznyechik: CMAC(PSK, client_nonce || server_nonce) */
+void kuznyechik_compute_auth(const uint8_t *expanded_key,
+                              const uint8_t *client_nonce,
+                              const uint8_t *server_nonce,
+                              uint8_t *auth_out);
+
 #endif /* KUZNYECHIK_H */

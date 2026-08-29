@@ -3,7 +3,9 @@
 ## Текущее состояние проекта
 
 ✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, CPS handshake, session переиспользование, DNS на сервере
-⚠️ **Осталось:** IPv6, epoll, аутентификация handshake, keepalive от сервера, таймауты сессий, тесты
+✅ **Работает:** Двусторонняя CMAC-аутентификация (client/server nonce, CMAC(PSK, client_nonce || server_nonce))
+✅ **Работает:** Retry handshake с экспоненциальным backoff (config: handshake_timeout_ms, handshake_max_retries)
+⚠️ **Осталось:** IPv6, epoll, keepalive от сервера, таймауты сессий, тесты
 
 ---
 
@@ -86,29 +88,41 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 ## Этап 3. Безопасность (P2)
 
-### 3.1. Аутентификация handshake (2-3 дня)
+### 3.1. Аутентификация handshake (2-3 дня) ✅ **ВЫПОЛНЕНО**
 Проблема: auth_tag не проверяется, сервер принимает от всех.
-Решение: CMAC(PSK, client_nonce || server_nonce).
-Файлы: session.c, quic_layer.c
+Решение: CMAC(PSK, client_nonce || server_nonce) — двусторонняя аутентификация.
+- Клиент отправляет `client_nonce` и `auth_tag = CMAC(PSK, client_nonce)`
+- Сервер возвращает `server_nonce` и `auth_tag = CMAC(PSK, client_nonce || server_nonce)`
+- При неверном ключе — соединение отклоняется с `CMAC mismatch`
+Файлы: session.c, quic_layer.c, server.c
 
-### 3.2. MAC с привязкой к длине (1-2 дня)
-Проблема: compute_mac инвариантен к перестановке блоков.
-Решение: CMAC на отдельном ключе, привязка к длине.
-Файлы: session.c
+### 3.2. MAC с привязкой к длине (1-2 дня) ✅ **ВЫПОЛНЕНО**
+Проблема: compute_mac инвариантен к перестановке блоков (MAC(A||B) == MAC(B||A)).
+Решение: CBC-MAC — шифрование каждого блока перед XOR'ом со следующим + включение длины.
+- `compute_mac`: CBC-MAC с 16-битным XOR-аккумулятором и финальным шифрованием с длиной
+- Тест 6: `MAC(A||B) != MAC(B||A)` — доказательство order-sensitivity
+Файлы: session.c, test_crypto.c
 
-### 3.3. Retry handshake с backoff (2-3 часа)
+### 3.3. Retry handshake с backoff (2-3 часа) ✅ **ВЫПОЛНЕНО**
 Проблема: Клиент падает при недоступном сервере.
-Решение: Экспоненциальный backoff вместо выхода.
-Файлы: client.c
+Решение: Экспоненциальный backoff (1s, 2s, 4s, 8s...) с ограничением 60с.
+- `handshake_max_retries` (по умолч. 5): макс. попыток
+- `handshake_timeout_ms` (по умолч. 1000): базовая задержка
+- Retry-цикл в `client.c`: `quic_client_connect` → проверка → backoff → повтор
+- `quic_client_close()` вызывается перед каждой повторной попыткой
+Файлы: client.c, config.h, config.c
 
 ---
 
 ## Этап 4. Эксплуатация (P3)
 
-### 4.1. Rate limiting (1-2 дня)
-Проблема: rate_limit в конфиге есть, но не используется.
-Решение: Token bucket per IP, configurable.
-Файлы: server.c
+### 4.1. Rate limiting (1-2 дня) ✅ **ВЫПОЛНЕНО**
+Проблема: rate_limit в конфиге есть, но не использовался для данных.
+Решение: Token bucket per IP с параметрами `rate_limit` (токенов/сек) и `rate_burst` (max burst).
+- `check_rate_limit()`: токеновый бакет с `clock_gettime(CLOCK_MONOTONIC)`
+- Применяется к HANDSHAKE + DATA пакетам
+- Фикс CMAC-бага: `server_nonce = {0}` при проверке auth клиента (до генерации реального nonce)
+Файлы: server.c, config.h, config.c
 
 ### 4.2. Graceful shutdown (2-3 часа)
 Проблема: SIGINT убивает процессы без очистки.

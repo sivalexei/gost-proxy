@@ -56,8 +56,7 @@ extern ssize_t tcp_write_all(int fd, const void *buf, size_t len);
 #define RATE_WINDOW_DEFAULT 60   /* окно очистки записей в секундах */
 
 /* Глобальный указатель на UDP-сокет сервера (для reuse в tcp_to_udp_thread) */
-static quic_server_t qs_global_obj;
-static quic_server_t *qs_global = &qs_global_obj;
+static quic_server_t *qs_global = NULL;
 
 static volatile int running = 1;
 static gost_session_t *sessions;
@@ -235,13 +234,11 @@ static void signal_handler(int sig) {
     (void)sig;
     running = 0;
     if (sig == SIGUSR1) {
-        /* Пробуждение epoll_wait — закрываем серверный FD */
+        /* Пробуждение epoll_wait */
         return;
     }
-    /* Пробуждаем epoll_wait через SIGUSR1, но только после запуска потока */
-    if (qs_global) {
-        qs_global->active = 0;  /* устанавливаем active ПЕРЕД отправкой SIGUSR1 */
-        fprintf(stderr, "DEBUG: qs_global->active=0, sending SIGUSR1\n");
+    /* Прерываем epoll в quic_server_recv через SIGUSR1 */
+    if (qs_global && qs_global->server_fd >= 0) {
         signal(SIGUSR1, signal_handler);
         kill(getpid(), SIGUSR1);
     }
@@ -264,9 +261,22 @@ static inline gost_session_t* create_session(uint64_t sid) {
             sessions[i].active = 1; sessions[i].session_id = sid;
             sessions[i].counter = 0; memset(sessions[i].nonce, 0, NONCE_SIZE);
             sessions[i].last_activity = time(NULL);
-            /* Используем session_id как nonce (96 бит) — синхронизировано с клиентом */
-            memcpy(sessions[i].nonce, &sid, 8);
-            /* Остальные 8 байт = 0 */
+            /* Генерация случайного nonce (96 бит) для каждого соединения */
+            ssize_t nr = getrandom(sessions[i].nonce, NONCE_SIZE, 0);
+            if (nr < NONCE_SIZE) {
+                int fd = open("/dev/urandom", O_RDONLY);
+                if (fd >= 0) {
+                    ssize_t rd = read(fd, sessions[i].nonce, NONCE_SIZE);
+                    close(fd);
+                    if (rd < NONCE_SIZE) {
+                        sessions[i].active = 0;
+                        return NULL;
+                    }
+                } else {
+                    sessions[i].active = 0;
+                    return NULL;
+                }
+            }
             memcpy(sessions[i].expanded_key, expanded_key, 160);
             session_hash_add(sid, i); return &sessions[i];
         }
@@ -289,7 +299,6 @@ static void* tcp_to_udp_thread(void *arg) {
     while (running && conn->active) {
         struct pollfd pfd = { .fd = conn->tcp_fd, .events = POLLIN };
         int ret = poll(&pfd, 1, 1000);
-        log_info("Server: tcp_to_udp poll returned %d", ret);
         if (ret > 0 && (pfd.revents & POLLIN)) {
             ssize_t n = read(conn->tcp_fd, buf, sizeof(buf));
             if (n <= 0) { conn->active = 0; break; }
@@ -335,13 +344,6 @@ static int connect_to_target(const char *host, uint16_t port) {
 static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
                                const gost_packet_t *pkt, uint64_t session_id) {
     uint8_t decrypted[MAX_PAYLOAD]; size_t data_len = 0; uint32_t pkt_conn_id = 0;
-    /* hex-dump first 20 payload bytes */
-    log_info("RECV_PAYLOAD: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-            pkt->payload[0], pkt->payload[1], pkt->payload[2], pkt->payload[3],
-            pkt->payload[4], pkt->payload[5], pkt->payload[6], pkt->payload[7],
-            pkt->payload[8], pkt->payload[9], pkt->payload[10], pkt->payload[11],
-            pkt->payload[12], pkt->payload[13], pkt->payload[14], pkt->payload[15],
-            pkt->payload[16], pkt->payload[17], pkt->payload[18], pkt->payload[19]);
     /* mutex уже захвачен в handle_packet */
     gost_session_t *session = find_session(session_id);
     if (!session) { log_warn("handle_data_packet: session not found, sid=%llu", (unsigned long long)session_id); return; }
@@ -584,7 +586,6 @@ static void* server_thread(void *arg) {
             dns_cache_expire();  /* чистим истёкшие DNS-записи */
         }
     }
-    log_info("Server thread: exiting, qs->active=%d, running=%d", qs->active, running);
     return NULL;
 }
 int main(int argc, char *argv[]) {
@@ -632,7 +633,6 @@ int main(int argc, char *argv[]) {
         unsigned int byte; sscanf(&cfg.key[i*2], "%2x", &byte); server_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(server_key, expanded_key);
-    log_debug("Server expanded_key: %02x%02x%02x%02x...%02x%02x", expanded_key[0],expanded_key[1],expanded_key[2],expanded_key[3], expanded_key[155],expanded_key[159]);
 
     /* Инициализация сессий с хеш-таблицей и цепочками */
     max_sessions = cfg.max_sessions;
@@ -647,65 +647,38 @@ int main(int argc, char *argv[]) {
     atomic_store(&free_slot_next, 0);
 
     memset(proxy_conns, 0, sizeof(proxy_conns));
-    quic_server_t qs_obj;
-    memset(&qs_obj, 0, sizeof(qs_obj));
+    quic_server_t qs;
+    memset(&qs, 0, sizeof(qs));
     /* Поддержка IPv6: определяем family из адреса */
     int family = AF_INET;
     if (strchr(cfg.bind_addr, ':')) family = AF_INET6;
     else if (strcmp(cfg.bind_addr, "::") == 0) family = AF_INET6;
 
-    qs_obj.server_fd = socket(family, SOCK_DGRAM, 0);
-    if (qs_obj.server_fd < 0) { perror("socket"); return 1; }
-    int opt = 1; setsockopt(qs_obj.server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    qs.server_fd = socket(family, SOCK_DGRAM, 0);
+    if (qs.server_fd < 0) { perror("socket"); return 1; }
+    int opt = 1; setsockopt(qs.server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     int buf = 1024*1024;
-    setsockopt(qs_obj.server_fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
-    setsockopt(qs_obj.server_fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
-    int flags = fcntl(qs_obj.server_fd, F_GETFL, 0);
-    if (flags >= 0) fcntl(qs_obj.server_fd, F_SETFL, flags | O_NONBLOCK);
-    if (bind_to_addr(qs_obj.server_fd, cfg.bind_addr, cfg.port, family) < 0) {
-        perror("bind"); close(qs_obj.server_fd); return 1;
+    setsockopt(qs.server_fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
+    setsockopt(qs.server_fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
+    int flags = fcntl(qs.server_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(qs.server_fd, F_SETFL, flags | O_NONBLOCK);
+    if (bind_to_addr(qs.server_fd, cfg.bind_addr, cfg.port, family) < 0) {
+        perror("bind"); close(qs.server_fd); return 1;
     }
     printf("[SERVER] Listening on %s:%d...\n", cfg.bind_addr, cfg.port);
     log_info("Server started on %s:%d", cfg.bind_addr, cfg.port);
-    qs_obj.active = 1;
-    qs_global = &qs_obj;  /* для reuse UDP-сокета в tcp_to_udp_thread и signal_handler */
+    qs.active = 1;
+    qs_global = &qs;  /* для reuse UDP-сокета в tcp_to_udp_thread */
     /* Запускаем UDP-сервер */
-    pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs_obj);
+    pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs);
 
     while (running) { struct timeval tv = { .tv_usec = 100000 }; select(0, NULL, NULL, NULL, &tv); }
     log_info("Server shutting down...");
     log_info("Server: waiting for server_thread to exit...");
-    /* Graceful shutdown — signal handler уже закрыл socket и qs_obj.active=0 */
+    /* Graceful shutdown — signal handler уже закрыл socket и qs.active=0 */
     /* Ждём завершения UDP-потока (макс. 5 сек) */
-    for (int i = 0; i < 10; i++) {
-        int ret = pthread_tryjoin_np(thread, NULL);
-        if (ret == EAGAIN) {
-            log_info("Server: waiting for thread %d", i);
-            sleep(1);
-        } else {
-            log_info("Server: thread %d joined, ret=%d", i, ret);
-            break;
-        }
-    }
-    /* Принудительно прерываем epoll_wait закрытием stream-сокет-сокры */
-    if (qs_global && qs_global->server_fd >= 0) {
-        log_info("Server: closing stream socket to unblock epoll_wait");
-        close(qs_global->server_fd);
-    }
-    /* Закрываем все stream-сокет-сокры */
-    for (int i = 0; i < MAX_PROXY_CONNS; i++) {
-        if (proxy_conns[i].tcp_fd >= 0) {
-            close(proxy_conns[i].tcp_fd);
-            proxy_conns[i].active = 0;
-        }
-    }
-    /* Отменяем поток (если ещё жив) и присоединяем */
-    if (pthread_kill(thread, 0) == 0) {
-        log_info("Server: sending cancel to UDP thread");
-        pthread_cancel(thread);
-    }
-    pthread_join(thread, NULL);
-    log_info("Server: UDP thread joined");
+    for (int i = 0; i < 10 && pthread_kill(thread, 0) == 0; i++) sleep(1);
+    pthread_cancel(thread); pthread_join(thread, NULL);
     /* Отключаем все сессии */
     for (int i = 0; i < max_sessions; i++) sessions[i].active = 0;
     free(sessions); log_close(); return 0;

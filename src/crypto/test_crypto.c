@@ -10,13 +10,19 @@ static void compute_mac(
 ) {
     uint8_t block[16];
     memset(block, 0, 16);
+    /* CBC-MAC: шифруем каждый блок перед XOR'ом со следующим */
     for (size_t offset = 0; offset < payload_len; offset += 16) {
         size_t block_len = (payload_len - offset > 16) ? 16 : (payload_len - offset);
-        for (size_t i = 0; i < block_len; i++)
-            block[i] ^= payload[offset + i];
+        for (size_t i = 0; i < 16; i++) {
+            if (i < block_len) block[i] ^= payload[offset + i];
+        }
+        kuznyechik_encrypt_block(block, expanded_key);
     }
+    /* Включаем длину в MAC: encrypt(accumulator || length) */
+    uint64_t plen_u64 = payload_len;
+    for (int i = 0; i < 8; i++) block[i + 8] = (uint8_t)(plen_u64 >> (i * 8));
+    kuznyechik_encrypt_block(block, expanded_key);
     memcpy(mac_out, block, 16);
-    kuznyechik_encrypt_block(mac_out, expanded_key);
 }
 
 int main() {
@@ -109,6 +115,29 @@ int main() {
         
         int ok = (memcmp(mac1, mac2, 16) == 0);
         printf(ok ? "OK\n" : "FAIL\n");
+        if (!ok) failures++;
+    }
+    
+    /* Тест 6: CBC-MAC не инвариантен к перестановке блоков */
+    printf("Тест 6: CBC-MAC order-sensitive... ");
+    {
+        uint8_t key[32];
+        for (int i = 0; i < 32; i++) key[i] = i;
+        uint8_t expanded[160];
+        kuznyechik_set_key(key, expanded);
+        
+        uint8_t p1[32], p2[32];
+        for (int i = 0; i < 16; i++) p1[i] = p2[i] = i;
+        for (int i = 16; i < 32; i++) p1[i] = p2[i] = i + 1;
+        /* p1: [0..15][17..32]  p2: [17..32][0..15] */
+        memcpy(p2, p1 + 16, 16);
+        memcpy(p2 + 16, p1, 16);
+        uint8_t mac1[16], mac2[16];
+        compute_mac(p1, 32, expanded, mac1);
+        compute_mac(p2, 32, expanded, mac2);
+        
+        int ok = (memcmp(mac1, mac2, 16) != 0);
+        printf(ok ? "OK (MAC различаются)\n" : "FAIL (MAC одинаковы!)\n");
         if (!ok) failures++;
     }
     
