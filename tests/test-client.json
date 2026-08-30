@@ -1,0 +1,11 @@
+{
+    "server_ip": "127.0.0.1",
+    "server_port": 11443,
+    "bind_addr": "127.0.0.1",
+    "port": 11081,
+    "handshake_timeout_ms": 1000,
+    "handshake_max_retries": 3,
+    "key": "0000000000000000000000000000000000000000000000000000000000000000",
+    "log_level": "info",
+    "log_file": "/tmp/gost-proxy-client-ci.log"
+}

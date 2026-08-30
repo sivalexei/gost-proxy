@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -21,7 +21,7 @@ jobs:
       - name: Build
         run: make all
 
-      - name: Run unit tests
+      - name: Unit tests
         run: make test
 
       - name: Werror check
@@ -35,7 +35,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build-and-test]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,7 +67,7 @@ jobs:
           # Wait for SOCKS5 to be ready
           echo "Waiting for SOCKS5 proxy..."
           for i in $(seq 1 30); do
-            if nc -z 127.0.0.1 1080 2>/dev/null; then
+            if nc -z 127.0.0.1 11081 2>/dev/null; then
               echo "SOCKS5 proxy is ready"
               break
             fi
@@ -77,13 +77,13 @@ jobs:
       - name: Run HTTPS tests
         run: |
           chmod +x tests/test-https.sh
-          ./tests/test-https.sh example.com
+          ./tests/test-https.sh example.com 11081
 
       - name: Check CPS handshake
         run: |
-          if grep -q "CPS\|handshake\|challenge" /tmp/gost-proxy/client.log 2>/dev/null; then
+          if grep -q "CPS\|handshake\|challenge" /tmp/gost-proxy-client-ci.log 2>/dev/null; then
             echo "✅ CPS handshake detected"
-            grep -i "CPS\|handshake" /tmp/gost-proxy/client.log | head -5
+            grep -i "CPS\|handshake" /tmp/gost-proxy-client-ci.log | head -5
           else
             echo "⚠️  CPS handshake not found in logs (may be normal for localhost)"
           fi
@@ -94,8 +94,8 @@ jobs:
         with:
           name: proxy-logs
           path: |
-            /tmp/gost-proxy/client.log
-            /tmp/gost-proxy/server.log
+            /tmp/gost-proxy-client-ci.log
+            /tmp/gost-proxy-server-ci.log
           retention-days: 7
 
       - name: Cleanup
