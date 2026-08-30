@@ -329,11 +329,12 @@ static void* tcp_to_udp_thread(void *arg) {
 }
 /* Синхронный connect для CONNECT-запросов (клиент ждёт ответ <=5с) */
 static int connect_to_target(const char *host, uint16_t port) {
-    struct sockaddr_in addr;
-    if (dns_cache_lookup(host, &addr) != 0) {
+    dns_af_t af;
+    union { struct sockaddr_in in4; struct sockaddr_in6 in6; } addr;
+    if (dns_cache_lookup(host, &af, &addr) != 0) {
         log_error("DNS lookup failed %s:%u", host, port); return -1;
     }
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = socket(af==DNS_AF_INET ? AF_INET : AF_INET6, SOCK_STREAM, 0);
     if (fd < 0) { log_error("socket: %s", strerror(errno)); return -1; }
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -341,7 +342,8 @@ static int connect_to_target(const char *host, uint16_t port) {
     struct timeval tv = { .tv_sec = 5 };
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    socklen_t addrlen = af==DNS_AF_INET ? sizeof(addr.in4) : sizeof(addr.in6);
+    if (connect(fd, (struct sockaddr *)&addr, addrlen) < 0) {
         log_error("connect %s:%u: %s", host, port, strerror(errno));
         close(fd); return -1;
     }

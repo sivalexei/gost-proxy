@@ -13,6 +13,7 @@
 #include <poll.h>
 #include <errno.h>
 #include "quic_layer.h"
+#include "dns_cache.h"
 #include "kuznyechik.h"
 #include "gost_common.h"
 #include "protocol.h"
@@ -214,12 +215,19 @@ static void* socks5_client_thread(void *arg) {
     log_info("SOCKS5 CONNECT %s:%u",th,tp);
     uint32_t mcid=__sync_fetch_and_add(&next_cid,1);
     log_info("SOCKS5: sending CONNECT, session_id=%llu, cid=%u", (unsigned long long)proxy_session.session_id, mcid);
-    struct sockaddr_in sin={0};
-    /* DNS-кэш с LRU и TTL 1 сутки */
-    if (dns_cache_lookup(th, &sin)!=0) {
+    /* DNS-кэш с LRU и TTL 1 сутки, поддержка IPv6 */
+    dns_af_t af;
+    union { struct sockaddr_in in4; struct sockaddr_in6 in6; } sin;
+    if (dns_cache_lookup(th, &af, &sin)!=0) {
         uint8_t e[]={0x05,0x04,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;
     }
-    uint8_t cd[8];cd[0]=1;cd[1]=1;memcpy(&cd[2],&sin.sin_addr.s_addr,4);cd[6]=(uint8_t)(tp>>8);cd[7]=(uint8_t)tp;
+    uint8_t cd[16+2]; uint8_t dlen=0;
+    if (af==DNS_AF_INET) {
+        cd[0]=1;cd[1]=1;memcpy(&cd[2],&sin.in4.sin_addr.s_addr,4);dlen=10;
+    } else {
+        cd[0]=1;cd[1]=4;memcpy(&cd[2],&sin.in6.sin6_addr.s6_addr,16);dlen=22;
+    }
+    cd[dlen-2]=(uint8_t)(tp>>8);cd[dlen-1]=(uint8_t)tp;
     uint32_t csc=0;
     log_info("SOCKS5: calling tunnel_send, dlen=8, cid=%u", mcid);
     int ts = tunnel_send(cd,8,mcid,&csc);
@@ -240,7 +248,7 @@ static void* socks5_client_thread(void *arg) {
 static void* socks5_server_thread(void *arg) {
     (void)arg;
     while (socks5_running) {
-        struct sockaddr_in ca; socklen_t al=sizeof(ca);
+        struct sockaddr_storage ca; socklen_t al=sizeof(ca);
         int fd=accept(socks5_listen_fd,(struct sockaddr*)&ca,&al);
         if (fd<0){if(socks5_running)log_error("accept: %s",strerror(errno));continue;}
         int *fp=malloc(sizeof(int));*fp=fd;
@@ -262,12 +270,22 @@ int socks5_start(uint16_t port, const char *sip, uint16_t sport,
     proxy_quic=qc;shared_ctr=sc;
     /* Инициализация очередей */
     for (int i = 0; i < MAX_SIMUL_CONNS; i++) queue_init(&queues[i]);
-    socks5_listen_fd=socket(AF_INET,SOCK_STREAM,0);
+    socks5_listen_fd=socket(AF_INET6,SOCK_STREAM,0);
     if (socks5_listen_fd<0){perror("socket");return -1;}
     int opt=1;setsockopt(socks5_listen_fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
-    struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;
-    a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);a.sin_port=htons(port);
-    if (bind(socks5_listen_fd,(struct sockaddr*)&a,sizeof(a))<0){perror("bind");close(socks5_listen_fd);return -1;}
+    int ipv6only=0;setsockopt(socks5_listen_fd,IPPROTO_IPV6,IPV6_V6ONLY,&ipv6only,sizeof(ipv6only));
+    struct sockaddr_in6 a6;memset(&a6,0,sizeof(a6));a6.sin6_family=AF_INET6;
+    a6.sin6_addr=in6addr_loopback;a6.sin6_port=htons(port);
+    if (bind(socks5_listen_fd,(struct sockaddr*)&a6,sizeof(a6))<0){
+        /* Fallback: IPv6 не сработал, пробуем AF_INET */
+        close(socks5_listen_fd);
+        socks5_listen_fd=socket(AF_INET,SOCK_STREAM,0);
+        if (socks5_listen_fd<0){perror("socket");return -1;}
+        setsockopt(socks5_listen_fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
+        struct sockaddr_in a;memset(&a,0,sizeof(a));a.sin_family=AF_INET;
+        a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);a.sin_port=htons(port);
+        if (bind(socks5_listen_fd,(struct sockaddr*)&a,sizeof(a))<0){perror("bind");close(socks5_listen_fd);return -1;}
+    }
     if (listen(socks5_listen_fd,16)<0){perror("listen");close(socks5_listen_fd);return -1;}
     socks5_running=1;
     demux_running=1;

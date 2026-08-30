@@ -5,7 +5,7 @@
 ✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, CPS handshake, session переиспользование, DNS на сервере
 ✅ **Работает:** Двусторонняя CMAC-аутентификация (client/server nonce, CMAC(PSK, client_nonce || server_nonce))
 ✅ **Работает:** Retry handshake с экспоненциальным backoff (config: handshake_timeout_ms, handshake_max_retries)
-⚠️ **Осталось:** IPv6 (SOCKS5 listener), интеграционные тесты (MAC/replay), санитайзеры
+⚠️ **Осталось:** интеграционные тесты (MAC/replay), санитайзеры
 
 ---
 
@@ -83,14 +83,14 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Решение: Лёгкий кэш с TTL, LRU-вытеснение.
 Файлы: dns_cache.h, dns_cache.c, server.c, socks5.c
 
-### 2.2. IPv6 (2-3 дня) ⚠️ **ЧАСТИЧНО**
-Проблема: клиент SOCKS5 слушает только IPv4.
-Статус:
-- ✅ Сервер UDP: `bind_to_addr()` поддерживает AF_INET6 (server.c:654-655)
-- ✅ Ресолвинг target: getaddrinfo() + AF_INET6 (quic_layer.c:92-176)
-- ⚠️ Клиентский SOCKS5 listener: только AF_INET (socks5.c:265)
-Осталось: SOCKS5 listener на AF_INET6 для приёма IPv6-подключений от curl.
-Файлы: socks5.c
+### 2.2. IPv6 (2-3 дня) ✅ **ВЫПОЛНЕНО**
+Проблема: клиент SOCKS5 слушал только IPv4.
+Решение:
+- ✅ SOCKS5 listener: AF_INET6 + IPV6_V6ONLY=0 (dual-stack) + fallback на AF_INET
+- ✅ DNS-кэш: поддержка IPv6 через AF_UNSPEC (getaddrinfo)
+- ✅ SOCKS5 CONNECT: поддержка IPv6 target (case 0x04), sockaddr_storage в accept
+- ✅ Серверный connect_to_target: IPv6 поддержка
+Файлы: socks5.c, dns_cache.h, dns_cache.c, server.c
 
 ### 2.3. epoll вместо poll (3-4 дня) ✅ **ВЫПОЛНЕНО**
 Проблема: poll 100мс → 100% CPU.
@@ -176,9 +176,9 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | Этап | Что | Статус | Оценка |
 |------|-----|--------|--------|
 | 1 | Стабильность (P0) | 4/4 выполнено | ✅ |
-| 2 | Архитектура (P1) | 2/3 выполнено | ~2-3 дн. |
+| 2 | Архитектура (P1) | 3/3 выполнено | ✅ |
 | 3 | Безопасность (P2) | 3/3 выполнено | ✅ |
 | 4 | Эксплуатация (P3) | 1/2 выполнено | ~2-3 дн. |
 | 5 | Тесты (параллельно) | 0.5/3 выполнено | ~3-4 дн. |
 
-**Суммарно:** ~4-6 дн. до готовности (vs ~4-6 нед. изначально).
+**Суммарно:** ~2-4 дн. до готовности (vs ~4-6 нед. изначально).

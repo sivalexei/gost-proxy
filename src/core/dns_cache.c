@@ -1,8 +1,10 @@
+#define _GNU_SOURCE
 #include "dns_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -78,8 +80,8 @@ static void evict_lru(void) {
     log_debug("DNS cache: evict LRU entry (size=%d)", cache_size);
 }
 
-int dns_cache_lookup(const char *host, struct sockaddr_in *out_addr) {
-    if (!host || !out_addr) return -1;
+int dns_cache_lookup(const char *host, dns_af_t *out_af, void *out_addr) {
+    if (!host || !out_af || !out_addr) return -1;
 
     pthread_mutex_lock(&dns_lock);
 
@@ -100,7 +102,11 @@ int dns_cache_lookup(const char *host, struct sockaddr_in *out_addr) {
                 return -1;
             } else {
                 /* кэш-попадание */
-                *out_addr = e->addr;
+                *out_af = e->af;
+                if (e->af == DNS_AF_INET)
+                    memcpy(out_addr, &e->addr.in4, sizeof(struct sockaddr_in));
+                else
+                    memcpy(out_addr, &e->addr.in6, sizeof(struct sockaddr_in6));
                 lru_touch(e);
                 pthread_mutex_unlock(&dns_lock);
                 return 0;
@@ -109,13 +115,12 @@ int dns_cache_lookup(const char *host, struct sockaddr_in *out_addr) {
         }
     }
 
-    /* Нет в кэше или истёк — resolv */
+    /* Нет в кэше или истёк — resolv (AF_UNSPEC — и IPv4 и IPv6) */
     struct addrinfo hints = {0}, *res = NULL;
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_V4MAPPED | AI_ADDRCONFIG;
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", 0); /* port не влияет на DNS */
     int gai = getaddrinfo(host, NULL, &hints, &res);
     if (gai != 0 || !res) {
         log_error("DNS cache: resolve failed for %s: %s", host, gai_strerror(gai));
@@ -123,18 +128,12 @@ int dns_cache_lookup(const char *host, struct sockaddr_in *out_addr) {
         return -1;
     }
 
-    struct sockaddr_in *sin = (struct sockaddr_in *)res->ai_addr;
-    freeaddrinfo(res);
-
-    /* Ищем свободный слот или удаляем LRU */
-    if (cache_size >= DNS_CACHE_MAX) evict_lru();
-
+    /* Берём первый результат (предпочитаем IPv6 если есть) */
     dns_entry_t *ne = malloc(sizeof(dns_entry_t));
-    if (!ne) { log_error("DNS cache: malloc failed"); pthread_mutex_unlock(&dns_lock); return -1; }
+    if (!ne) { log_error("DNS cache: malloc failed"); freeaddrinfo(res); pthread_mutex_unlock(&dns_lock); return -1; }
 
     strncpy(ne->host, host, DNS_CACHE_HOST_MAX - 1);
     ne->host[DNS_CACHE_HOST_MAX - 1] = '\0';
-    memcpy(&ne->addr, sin, sizeof(struct sockaddr_in));
     ne->expires = time(NULL) + DNS_CACHE_TTL;
     ne->lru_next = &lru_head;
     ne->lru_prev = lru_head.lru_prev;
@@ -145,9 +144,25 @@ int dns_cache_lookup(const char *host, struct sockaddr_in *out_addr) {
     hash[h] = ne;
     cache_size++;
 
-    *out_addr = ne->addr;
-    log_debug("DNS cache: resolved %s -> %s (size=%d, TTL=%d)",
-              host, inet_ntoa(sin->sin_addr), cache_size, DNS_CACHE_TTL);
+    if (res->ai_family == AF_INET6) {
+        ne->af = DNS_AF_INET6;
+        memcpy(&ne->addr.in6, res->ai_addr, sizeof(struct sockaddr_in6));
+        char ipbuf[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &((struct sockaddr_in6*)res->ai_addr)->sin6_addr, ipbuf, sizeof(ipbuf));
+        log_debug("DNS cache: resolved %s -> %s (size=%d, TTL=%d)", host, ipbuf, cache_size, DNS_CACHE_TTL);
+    } else {
+        ne->af = DNS_AF_INET;
+        memcpy(&ne->addr.in4, res->ai_addr, sizeof(struct sockaddr_in));
+        log_debug("DNS cache: resolved %s -> %s (size=%d, TTL=%d)",
+                  host, inet_ntoa(((struct sockaddr_in*)res->ai_addr)->sin_addr), cache_size, DNS_CACHE_TTL);
+    }
+    freeaddrinfo(res);
+
+    *out_af = ne->af;
+    if (ne->af == DNS_AF_INET)
+        memcpy(out_addr, &ne->addr.in4, sizeof(struct sockaddr_in));
+    else
+        memcpy(out_addr, &ne->addr.in6, sizeof(struct sockaddr_in6));
     pthread_mutex_unlock(&dns_lock);
     return 0;
 }
