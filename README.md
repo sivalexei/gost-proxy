@@ -1,43 +1,39 @@
 # ГОСТ Прокси
 
-SOCKS5-прокси с шифрованием ГОСТ Р 34.12-2015 "Кузнечик". Клиент шифрует трафик и отправляет через UDP на сервер; сервер расшифровывает и проксирует на целевые хосты.
+SOCKS5-прокси с шифрованием ГОСТ Р 34.12-2015 «Кузнечик». Клиент шифрует трафик и отправляет через UDP на сервер; сервер расшифровывает и проксирует на целевые хосты.
 
 ## Возможности
 
 - **Шифрование** ГОСТ Р 34.12-2015 (Кузнечик) — C-реализация по RFC 7801
-- **QUIC-транспорт** поверх UDP с рукопожатием, keepalive от обеих сторон и мультиплексированием
-- **CPS (Chaffing/Pretense System)** — обфускация трафика для маскировки под случайный
-- **Двусторонняя CMAC-аутентификация** — client/server nonce с проверкой подлинности обеих сторон
-- **Auth-tag** — encrypt-then-MAC для проверки целостности данных
+- **QUIC-транспорт** поверх UDP с рукопожатием, keepalive и мультиплексированием
+- **CPS обфускация** — маскировка трафика под случайный
+- **Двусторонняя CMAC-аутентификация** — client/server nonce
+- **Auth-tag** — encrypt-then-MAC для проверки целостности
 - **conn_id** — изолированные параллельные соединения
 - **SOCKS5-прокси** на клиенте (127.0.0.1:1081)
-- **DNS на сервере** — клиент шлёт домен, сервер резолвит через getaddrinfo()
-- **Переиспользование сессий** — free list + тайм-ауты
-- **systemd-юниты** для автоматического запуска
+- **DNS на сервере**, переиспользование сессий, graceful shutdown
 
-## Протокол рукопожатия (QUIC)
-
-1. **Client → Server**: `PKT_HANDSHAKE` с `session_id`, `client_nonce` (8 байт, из `/dev/urandom`)
-2. **Server → Client**: `PKT_HANDSHAKE` с `session_id`, `server_nonce` (8 байт, из `/dev/urandom`), `auth_tag`
-3. **Auth**: `auth_tag = CMAC(PSK, client_nonce || server_nonce)` — двусторонняя проверка подлинности через ГОСТ-Кузнечик
-4. При неверном ключе — соединение отклоняется с `CMAC mismatch`
-
-## Требования
-
-- Linux x86-64
-- NASM (для `tcp_helpers.asm` — оптимизация TCP write loop)
-- GCC
-- glibc
-
-## Сборка
+## Сборка и тесты
 
 ```bash
-make              # сборка gost-server и gost-client
-make test         # тесты шифрования (все 5 тестов RFC 7801)
-make clean        # очистка
+make                          # сборка gost-server и gost-client
+make test                     # все тесты (gost-test + test_protocol + test_pack_roundtrip)
+make asan                     # сборка + тесты с AddressSanitizer
+make asan MODE=ubsan          # сборка + тесты с UBSan
+make sanitize-werror          # проверка на -Werror
+make build-curl-openssl       # сборка curl с OpenSSL
+make clean                    # очистка
 ```
 
 ## Запуск
+
+### Подготовка ключа
+
+Ключ 256 бит (64 hex-символа):
+
+```bash
+export GOST_PROXY_KEY="0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+```
 
 ### Сервер
 
@@ -45,7 +41,31 @@ make clean        # очистка
 ./build/gost-server /etc/gost-proxy/server.json
 ```
 
-Конфиг по умолчанию — `config/server.json` (порт 10443).
+**Конфиг** (`config/server.json`):
+
+```json
+{
+    "listen_port": 10443,
+    "max_sessions": 1024,
+    "session_timeout": 300,
+    "rate_limit": 10,
+    "rate_burst": 20,
+    "key": "0123456789ABCDEF...",
+    "log_level": "info",
+    "log_file": "/tmp/gost-proxy/server.log"
+}
+```
+
+| Параметр | Описание | По умолч. |
+|----------|----------|-----------|
+| `listen_port` | Порт UDP-слушателя | 10443 |
+| `max_sessions` | Макс. сессий | 1024 |
+| `session_timeout` | Таймаут сессии (сек) | 300 |
+| `rate_limit` | Токенов/сек (token bucket) | 10 |
+| `rate_burst` | Макс. burst бакета | 20 |
+| `key` | 64 hex-символа | обязательный |
+| `log_level` | debug / info / warn / error | "info" |
+| `log_file` | Путь к логу | "/tmp/gost-proxy/server.log" |
 
 ### Клиент
 
@@ -53,67 +73,57 @@ make clean        # очистка
 ./build/gost-client /etc/gost-proxy/client.json
 ```
 
-Клиент запускает SOCKS5-прокси на `127.0.0.1:1081`. Настройте curl или браузер:
+**Конфиг** (`config/client.json`):
+
+```json
+{
+    "server_ip": "10.0.0.1",
+    "server_port": 10443,
+    "bind_addr": "127.0.0.1",
+    "port": 1081,
+    "handshake_timeout_ms": 1000,
+    "handshake_max_retries": 5,
+    "key": "0123456789ABCDEF..."
+}
+```
+
+| Параметр | Описание | По умолч. |
+|----------|----------|-----------|
+| `server_ip` | IP сервера | обязательный |
+| `server_port` | Порт сервера | 10443 |
+| `bind_addr` | Локальный адрес SOCKS5 | "127.0.0.1" |
+| `port` | Порт SOCKS5-прокси | 1081 |
+| `handshake_timeout_ms` | Базовая задержка между попытками (мс) | 1000 |
+| `handshake_max_retries` | Макс. попыток handshake | 5 |
+| `key` | 64 hex-символа | обязательный |
+
+**Retry с экспоненциальным backoff:** 1s → 2s → 4s → 8s → 16s → 32s (макс. 60s).
+
+### Использование
+
+Клиент запускает SOCKS5 на `127.0.0.1:1081`:
 
 ```bash
+curl --socks5-hostname 127.0.0.1:1081 http://example.com
 curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ```
 
-### Конфигурация клиента (retry)
-
-```json
-{
-  "server_ip": "10.0.0.1",
-  "server_port": 10443,
-  "handshake_timeout_ms": 1000,
-  "handshake_max_retries": 5,
-  "key": "0123456789ABCDEF..."
-}
+Для HTTPS с GnuTLS (ALT Linux) используйте встроенный curl с OpenSSL:
+```bash
+make build-curl-openssl
+export PATH="$HOME/.local/bin:$PATH"
+curl --socks5-hostname 127.0.0.1:1081 https://example.com
 ```
 
-- `handshake_timeout_ms`: базовая задержка между попытками (по умолч. 1000)
-- `handshake_max_retries`: макс. попыток (по умолч. 5)
-- Экспоненциальный backoff: 1s → 2s → 4s → 8s → 16s → 32s (макс. 60s)
+## Интеграционные тесты
 
-### Конфигурация сервера (rate limiting)
-
-```json
-{
-  "rate_limit": 10,       /* токенов в секунду (по умолч. 10; prod: 1000) */
-  "rate_burst": 20,       /* макс. burst (размер бакета), по умолч. 20 */
-  "key": "0123456789ABCDEF..."
-}
+```bash
+./tests/test-https.sh [target_host]
 ```
 
-- **Token bucket** per IP: каждый пакет (HANDSHAKE, DATA) отнимает 1 токен
-- Refill: `rate_limit` токенов/сек, refill до `rate_burst`
-- Превышен лимит — сервер тихо отбрасывает пакет (log: `Rate limit exceeded`)
-
-## Архитектура
-
-```
-src/
-├── crypto/
-│   ├── gost_cipher.c      # Ядро шифрования, C-реализация (RFC 7801)
-│   ├── kuznyechik.h       # Интерфейс
-│   └── gost_common.h      # Общие определения, структура пакета
-├── core/
-│   ├── server.c           # Прокси-сервер (UDP → TCP)
-│   ├── client.c           # Клиент (SOCKS5 → UDP)
-│   ├── session.c          # pack/unpack с CTR + MAC, CPS
-│   ├── protocol.h         # Протокол обмена
-│   ├── config.c           # JSON-парсер конфигурации
-│   ├── log.c              # Логирование
-│   ├── obfuscation.c      # Обфускация (Salamander XOR)
-│   └── tcp_helpers.asm    # Быстрый TCP write loop (NASM x86-64)
-└── network/
-    ├── socks5.c           # SOCKS5 CONNECT + relay
-    └── quic_layer.c       # QUIC-слой поверх UDP
-```
+Тестирует: HTTP, HTTPS (GnuTLS/OpenSSL), TLS 1.3, upload/download round-trip, CPS handshake.
 
 ## Протокол
-
-Формат пакета:
 
 ```
 [ magic(4) | type(1) | conn_id(4) | session_id(8) | payload(1400) | auth_tag(16) ]
@@ -121,56 +131,26 @@ src/
 
 | Тип | Описание |
 |-----|----------|
-| 0x01 | HANDSHAKE — аутентификация сессии |
-| 0x02 | DATA — зашифрованные данные с conn_id |
-| 0x03 | KEEPALIVE — поддержание NAT-сессии (от клиента и сервера, каждые 30с) |
+| 0x01 | HANDSHAKE — аутентификация |
+| 0x02 | DATA — зашифрованные данные |
+| 0x03 | KEEPALIVE — каждые 30с |
 | 0x04 | DISCONNECT — отключение |
-| 0x10-0x13 | Fake QUIC/DNS/TLS — обфускация CPS |
-| 0x14 | CPS Challenge/Response |
+| 0x10-0x13 | Fake QUIC/DNS/TLS — CPS обфускация |
+
+Рукопожатие: Client → Server nonce → Server nonce + auth_tag → CMAC(PSK, client_nonce \|\| server_nonce).
+
+## Архитектура
+
+```
+src/
+├── crypto/           # ГОСТ Р 34.12-2015 (Кузнечик), RFC 7801
+├── core/             # сервер, клиент, session, config, obfuscation, DNS
+└── network/          # SOCKS5, QUIC-слой
+```
 
 ## Сборка пакетов
 
 ```bash
-# RPM (ALT Linux)
-./build_rpm.sh
-ls rpmbuild/RPMS/x86_64/*.rpm
-
-# DEB (Ubuntu/Debian)
-./build_deb.sh
-ls debs/*.deb
+./build_rpm.sh    # RPM (ALT Linux)
+./build_deb.sh    # DEB (Ubuntu/Debian)
 ```
-
-## HTTPS через прокси
-
-Прокси прозрачно пересылает байты — TLS handshake происходит в клиентском приложении.
-
-**HTTP** работает стабильно. **HTTPS** зависит от TLS-библиотеки клиента:
-- curl с **OpenSSL** — работает стабильно
-- curl с **GnuTLS** (ALT Linux) — может не работать с некоторыми CDN
-- Firefox (NSS) — работает стабильно
-
-Решение — соберите curl с OpenSSL:
-```bash
-make build-curl-openssl
-export PATH="$HOME/.local/bin:$PATH"
-curl --socks5-hostname 127.0.0.1:1081 https://example.com
-```
-
-Или используйте Firefox (NSS).
-
-Подробнее: `docs/https-troubleshooting.md`
-
-## Безопасность
-
-- Ключ 256 бит, блок 128 бит, 10 раундов
-- **Двусторонняя CMAC-аутентификация** — client/server nonce, `CMAC(PSK, client_nonce || server_nonce)`
-- CTR-режим, encrypt-then-MAC
-- Nonce из `/dev/urandom`
-- conn_id изолирует параллельные соединения
-- CPS handshake — challenge/response верификация
-- При неверном ключе — соединение **отклоняется** (CMAC mismatch)
-
-## Разработка
-
-План развития: `DEVELOPMENT_PLAN.md`
-История изменений: `PROGRESS.md`
