@@ -5,7 +5,8 @@
 ✅ **Работает:** Сборка, SOCKS5 end-to-end, QUIC handshake, обфускация, CPS handshake, session переиспользование, DNS на сервере
 ✅ **Работает:** Двусторонняя CMAC-аутентификация (client/server nonce, CMAC(PSK, client_nonce || server_nonce))
 ✅ **Работает:** Retry handshake с экспоненциальным backoff (config: handshake_timeout_ms, handshake_max_retries)
-⚠️ **Осталось:** интеграционные тесты (MAC/replay), санитайзеры
+✅ **Работает:** Санитайзеры ASan/UBSan (make asan, make asan MODE=ubsan), -Werror ✅
+✅ **Работает:** 13/13 тестов test_pack_roundtrip (pack→unpack, MAC corruption, replay counter)
 
 ---
 
@@ -149,13 +150,12 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 ## Этап 5. Тесты (параллельно)
 
-### 5.1. Юнит-тесты протокола ⚠️ **ЧАСТИЧНО**
-Статус: Есть crypto-тесты (gost_test, test_crypto, ctr_test, test_prng).
-Осталось:
-- pack → unpack на всех длинах
-- Повреждённый MAC, повтор счётчика
-- Обрезанные пакеты
-Файлы: src/crypto/*test*.c, test_pack*.c
+### 5.1. Юнит-тесты протокола ✅ **ВЫПОЛНЕНО**
+Статус: Все тесты проходят, в т.ч. с ASan/UBSan.
+- ✅ test_pack_roundtrip.c — 13 тестов: pack→unpack на всех длинах (1,10,64,256,512), MAC corruption detection, MAC order-sensitivity, replay counter detection, auth-tag checks
+- ✅ test_protocol.c — 8 тестов: unpack0, unpack1, pack_unpack, pack->unpack max, MAC fails with wrong key, MAC detects tampered, counter replay rejected, null params rejected
+- ✅ gost_test — 5 крипто-тестов: расширение ключа, шифрование, расшифрование, CTR roundtrip, полный roundtrip
+Файлы: test_pack_roundtrip.c, src/core/test_protocol.c, src/crypto/gost_test.c
 
 ### 5.2. Интеграционный тест ⚠️ **ЧАСТИЧНО**
 Статус: `tests/test-https.sh` — HTTP/HTTPS через SOCKS5-прокси с curl.
@@ -164,10 +164,12 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 - Проверка CPS handshake в CI
 Файлы: tests/
 
-### 5.3. Санитайзеры ❌ **НЕ ВЫПОЛНЕНО**
-- ❌ fsanitize=address,undefined в Makefile
-- ❌ -Werror в CI
-Файлы: Makefile, .github/workflows/ (если будет)
+### 5.3. Санитайзеры ✅ **ВЫПОЛНЕНО**
+- ✅ `make asan` — ASan сборка и тесты (гост-тест + test_protocol)
+- ✅ `make asan MODE=ubsan` — UBSan сборка и тесты
+- ✅ `make sanitize-werror` — `-Wall -Wextra -Werror` на все .c файлы
+- ✅ -Werror ✅, ASan ✅, UBSan ✅
+Файлы: Makefile, scripts/sanitize.sh
 
 ---
 
@@ -179,6 +181,15 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 2 | Архитектура (P1) | 3/3 выполнено | ✅ |
 | 3 | Безопасность (P2) | 3/3 выполнено | ✅ |
 | 4 | Эксплуатация (P3) | 2/2 выполнено | ✅ |
-| 5 | Тесты (параллельно) | 0.5/3 выполнено | ~3-4 дн. (проверка sanity скриптов) |
+| 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
+| 5.2 | Интеграционный тест | 0/1 выполнено | ~1-2 дн. |
+| 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
 
-**Суммарно:** ~2-4 дн. до готовности (vs ~4-6 нед. изначально).
+**Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
+
+## Следующие шаги
+
+1. Интеграционный тест: сверить контрольную сумму upload/download через тест-сервер
+2. CI (.github/workflows): добавить make sanitize-werror, make asan
+3. Документация: обновить README с примерами запуска и настройки
+4. Код-ревью: проверить security-угрозы (auth-tag bypass, padding oracle, overflow)

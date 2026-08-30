@@ -60,26 +60,6 @@ uint32_t protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len,
         p[i] = (uint8_t)prng_next();
     return padding_len;
 }
-/* Записываем padding_len в payload и заполняем padding */
-static void write_padding_in_payload(uint8_t *p, uint32_t padding_len, uint64_t sid) {
-    uint32_t stored_len = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | (uint32_t)p[7];
-    size_t max_space = MAX_PAYLOAD - 8 - 4 - (size_t)stored_len;
-    if (padding_len > (uint32_t)max_space) padding_len = (uint32_t)max_space;
-    /* Сдвигаем данные+padding на 4 байта */
-    size_t shift = 4;
-    if (padding_len > 0) {
-        size_t data_start = 8;
-        size_t data_len = stored_len;
-        memmove(p + data_start + shift, p + data_start, data_len);
-        /* Пишем padding_len в [8..11] */
-        p[8] = (padding_len >> 24) & 0xFF; p[9] = (padding_len >> 16) & 0xFF;
-        p[10] = (padding_len >> 8) & 0xFF; p[11] = padding_len & 0xFF;
-        /* Заполняем padding */
-        prng_seed_u64(sid);
-        for (uint32_t i = 0; i < padding_len; i++)
-            p[12 + i] = (uint8_t)prng_next();
-    }
-}
 static void compute_mac(const uint8_t *pay, size_t plen, const uint8_t *ek, uint8_t *mac) {
     uint8_t b[16]; memset(b,0,16);
     /* Включаем длину в MAC: XOR-им старшие 8 байт с plen */
@@ -107,6 +87,7 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     pkt->conn_id=htonl(conn_id); pkt->session_id=htonll(session_id);
     (*counter)+=2; uint32_t pc=*counter;
     uint32_t stored_len=(uint32_t)data_len;
+    if(stored_len > MAX_PAYLOAD-12) stored_len = MAX_PAYLOAD-12;
     uint32_t padding_len=protocol_compute_padding_len(session_id);
     uint32_t total=12+padding_len+stored_len;
     if(total>MAX_PAYLOAD)padding_len=MAX_PAYLOAD-12-stored_len;

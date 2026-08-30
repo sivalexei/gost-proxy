@@ -70,8 +70,8 @@ $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(SERVER_OBJ)
 $(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CLIENT_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
-test: $(BUILD_DIR)/gost-test $(BUILD_DIR)/test_protocol
-	./$(BUILD_DIR)/gost-test && echo '---' && ./$(BUILD_DIR)/test_protocol
+test: $(BUILD_DIR)/gost-test $(BUILD_DIR)/test_protocol $(BUILD_DIR)/test_pack_roundtrip
+	./$(BUILD_DIR)/gost-test && echo '---' && ./$(BUILD_DIR)/test_protocol && echo '---' && ./$(BUILD_DIR)/test_pack_roundtrip
 
 $(BUILD_DIR)/gost-test: $(CRYPTO_OBJ) $(BUILD_DIR)/gost_test.o | $(BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
@@ -83,6 +83,12 @@ $(BUILD_DIR)/test_protocol: $(CRYPTO_OBJ) $(BUILD_DIR)/test_protocol.o $(BUILD_D
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_protocol.o: $(SRC_DIR)/core/test_protocol.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/test_pack_roundtrip: $(BUILD_DIR)/test_pack_roundtrip.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o $(BUILD_DIR)/gost_cipher.o | $(BUILD_DIR)
+	$(CC) $^ -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_pack_roundtrip.o: test_pack_roundtrip.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test-https:
