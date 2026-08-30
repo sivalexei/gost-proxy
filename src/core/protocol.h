@@ -11,9 +11,10 @@ uint32_t protocol_compute_padding_len(uint64_t session_id);
 /* Инициализация PRNG (вызвать один раз при старте) */
 void protocol_prng_init(void);
 
-/* Вставка случайного padding в payload (ПОСЛЕ данных) */
-void protocol_insert_padding(uint8_t *payload, uint32_t *data_len,
-                              uint32_t padding_len, uint64_t session_id);
+/* Вставка случайного padding в payload (ПОСЛЕ данных)
+ * Возвращает: длину вставленного padding в байтах */
+uint32_t protocol_insert_padding(uint8_t *payload, uint32_t *data_len,
+                                 uint32_t padding_len, uint64_t session_id);
 
 
 /* Инициализация сессии с клиентом (убрано — больше не нужно) */

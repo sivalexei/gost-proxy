@@ -70,7 +70,7 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         if (rnd_ret2 < 0) {
             int fd2 = open("/dev/urandom", O_RDONLY);
             if (fd2 >= 0) {
-                read(fd2, client_nonce, sizeof(client_nonce));
+                ssize_t _r = read(fd2, client_nonce, sizeof(client_nonce)); (void)_r;
                 close(fd2);
             }
         }

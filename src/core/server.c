@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -463,8 +464,10 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             ssize_t rnd_ret = getrandom(server_nonce, sizeof(server_nonce), 0);
             if (rnd_ret < 0) {
                 int fd = open("/dev/urandom", O_RDONLY);
-                if (fd >= 0) { read(fd, server_nonce, sizeof(server_nonce)); close(fd); }
-                else { break; }
+                if (fd >= 0) {
+                    ssize_t rret = read(fd, server_nonce, sizeof(server_nonce)); (void)rret;
+                    close(fd);
+                } else { break; }
             }
 
             /* Создаём сессию */
@@ -709,6 +712,22 @@ int main(int argc, char *argv[]) {
     if (qs_global && qs_global->server_fd >= 0) {
         log_info("Server: closing stream socket to unblock epoll_wait");
         close(qs_global->server_fd);
+    }
+    /* Отправка DISCONNECT всем активным сессиям */
+    gost_packet_t dis_pkt;
+    memset(&dis_pkt, 0, sizeof(dis_pkt));
+    dis_pkt.magic = htonl(GOST_PROXY_MAGIC);
+    dis_pkt.type = PKT_DISCONNECT;
+    for (int i = 0; i < max_sessions; i++) {
+        if (sessions[i].active && sessions[i].session_id &&
+            sessions[i].client_addr.sin_addr.s_addr != 0) {
+            ssize_t sent = quic_server_send(&qs_obj, &sessions[i].client_addr,
+                                            sessions[i].client_addr_len,
+                                            (const uint8_t*)&dis_pkt, sizeof(gost_packet_t));
+            if (sent >= 0) {
+                log_debug("DISPACK sent to sid=%llu", (unsigned long long)sessions[i].session_id);
+            }
+        }
     }
     /* Закрываем все stream-сокет-сокры */
     for (int i = 0; i < MAX_PROXY_CONNS; i++) {

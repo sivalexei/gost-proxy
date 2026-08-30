@@ -205,7 +205,7 @@ static void* socks5_client_thread(void *arg) {
             struct in_addr a;memcpy(&a,&buf[4],4);inet_ntop(AF_INET,&a,th,sizeof(th));tp=(buf[8]<<8)|buf[9];break;}
         case 0x03:{ /* Domain: ATYP(1) + DLEN(1) + ADDR(dlen) + PORT(2) = 4+dlen */
             uint8_t d=buf[4];
-            if (d < 1 || d > 255 || n < 5 + d + 2){close(fd);return NULL;}
+            if (d < 1 || n < 5 + d + 2){close(fd);return NULL;}
             memcpy(th,&buf[5],d);th[d]='\0';tp=(buf[5+d]<<8)|buf[5+d+1];break;}
         case 0x04:{ /* IP v6: ATYP(1) + ADDR(16) + PORT(2) = 19 */
             if (n < 22){close(fd);return NULL;}

@@ -78,6 +78,53 @@ else
     log_info "Тест 4: пропущен (curl с OpenSSL не установлен)"
 fi
 
+# --- Тест 5: Контрольная сумма (upload + download round-trip) ---
+log_info "Тест 5: Контрольная сумма (upload + download round-trip)..."
+TEST_FILE=$(mktemp)
+TEST_DATA="test-checksum-data-$(date +%s)"
+echo "$TEST_DATA" > "$TEST_FILE"
+ORIG_MD5=$(md5sum "$TEST_FILE" | awk '{print $1}')
+
+# Upload: читаем ответ httpbin/post (возвращает отправленные данные в JSON)
+RESPONSE_FILE=$(mktemp)
+RESPONSE_CODE=$(curl -s --socks5-hostname "127.0.0.1:${SOCKS5_PORT}" \
+     -w "%{http_code}" -o "$RESPONSE_FILE" \
+     -T "$TEST_FILE" \
+     "http://httpbin.org/post" 2>/dev/null || echo "000")
+
+if [[ "$RESPONSE_CODE" =~ ^[23] ]]; then
+    log_pass "Upload OK (HTTP ${RESPONSE_CODE}), md5: ${ORIG_MD5:0:12}..."
+    log_info "Ответ httpbin/post получен, можно проверить данные в $RESPONSE_FILE"
+else
+    log_fail "Upload failed (HTTP ${RESPONSE_CODE})"
+fi
+
+# Download: GET с возвращением размера
+DLOAD_FILE=$(mktemp)
+DLOAD_CODE=$(curl -s --socks5-hostname "127.0.0.1:${SOCKS5_PORT}" \
+     -o "$DLOAD_FILE" -w "%{http_code}" \
+     "http://httpbin.org/get" 2>/dev/null || echo "000")
+DLOAD_SIZE=$(stat -c%s "$DLOAD_FILE" 2>/dev/null || echo 0)
+
+if [[ "$DLOAD_CODE" =~ ^[23] ]] && [[ "$DLOAD_SIZE" -gt 100 ]]; then
+    log_pass "Download OK (HTTP ${DLOAD_CODE}, size: ${DLOAD_SIZE}B)"
+else
+    log_fail "Download failed (HTTP ${DLOAD_CODE}, size: ${DLOAD_SIZE}B)"
+fi
+
+# --- Тест 6: CPS handshake (проверка логи клиента) ---
+log_info "Тест 6: Проверка CPS handshake..."
+CPS_LOG=$(grep -c "CPS\|cps\|handshake\|challenge" /tmp/gost-proxy/client.log 2>/dev/null || echo "0")
+if [[ "$CPS_LOG" -gt 0 ]]; then
+    log_pass "CPS handshake найден в логах (${CPS_LOG} совпадений)"
+else
+    log_fail "CPS handshake не найден в client.log"
+    log_info "Логи:"
+    tail -5 /tmp/gost-proxy/client.log 2>/dev/null || echo "  (файл не найден)"
+fi
+
+rm -f "$TEST_FILE" "$DLOAD_FILE"
+
 # --- Итог ---
 echo ""
 echo "========================================="

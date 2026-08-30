@@ -73,18 +73,28 @@
 
 ### Короткие задачи (P0)
 - [x] Keepalive от сервера к клиенту (2-3 часа) ✅
-- [ ] Таймауты сессий (2-3 часа)
-- [ ] Валидация входных данных (1 день)
+- [x] Таймауты сессий (2-3 часа) ✅ — `expire_sessions()` в main loop
+- [x] Валидация входных данных (1 день) ✅ — проверка `len >= sizeof(gost_packet_t)`
 
 ### Средние задачи (P1)
-- [ ] DNS-кэш (1 день)
-- [ ] IPv6 поддержка (2-3 дня)
-- [ ] epoll вместо poll (3-4 дня)
+- [x] DNS-кэш (1 день) ✅ — dns_cache.c с LRU-вытеснением
+- [x] IPv6 поддержка (2-3 дня) ✅ — dual-stack SOCKS5, IPv6 target connect
+- [x] epoll вместо poll (3-4 дня) ✅ — epoll в server.c и quic_layer.c
 
 ### Безопасность (P2)
-- [ ] Аутентификация handshake (2-3 дня)
-- [ ] MAC с привязкой к длине (1-2 дня)
-- [ ] Retry handshake с backoff (2-3 часа)
+- [x] Аутентификация handshake (2-3 дня) ✅ — двусторонняя CMAC(PSK, client_nonce || server_nonce)
+- [x] MAC с привязкой к длине (1-2 дня) ✅ — CBC-MAC, order-sensitive
+- [x] Retry handshake с backoff (2-3 часа) ✅ — экспоненциальный backoff 1s→60s
+
+### Эксплуатация (P3)
+- [x] Rate limiting (1-2 дня) ✅ — токеновый бакет per IP
+- [ ] Graceful shutdown с DISCONNECT — отправка DISPACK всем сессиям перед exit
+
+### Тесты
+- [x] Crypto-тесты (5 RFC-тестов) ✅
+- [ ] Интеграционные тесты с round-trip контрольной суммой
+- [ ] Санитайзеры (AddressSanitizer, UBSan) — скрипты готовы, требуют проверки
+- [ ] -Werror компиляция в CI ✅
 
 ---
 

@@ -24,7 +24,7 @@ SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OB
 CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ)
 PROXY_OBJ = $(BUILD_DIR)/proxy.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ)
 
-.PHONY: all clean setup test test-https build-curl-openssl
+.PHONY: all clean setup test test-https build-curl-openssl asan sanitize-werror
 
 all: $(BUILD_DIR)/gost-server $(BUILD_DIR)/gost-client
 
@@ -70,13 +70,19 @@ $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(SERVER_OBJ)
 $(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CLIENT_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
-test: $(BUILD_DIR)/gost-test
-	./$(BUILD_DIR)/gost-test
+test: $(BUILD_DIR)/gost-test $(BUILD_DIR)/test_protocol
+	./$(BUILD_DIR)/gost-test && echo '---' && ./$(BUILD_DIR)/test_protocol
 
 $(BUILD_DIR)/gost-test: $(CRYPTO_OBJ) $(BUILD_DIR)/gost_test.o | $(BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/gost_test.o: $(SRC_DIR)/crypto/gost_test.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/test_protocol: $(CRYPTO_OBJ) $(BUILD_DIR)/test_protocol.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o | $(BUILD_DIR)
+	$(CC) $^ -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_protocol.o: $(SRC_DIR)/core/test_protocol.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test-https:
@@ -90,3 +96,13 @@ clean:
 
 setup:
 	sudo apt-get update && sudo apt-get install -y nasm build-essential
+
+# --- Санитайзеры ---
+# make asan — сборка и запуск с AddressSanitizer
+# make asan MODE=ubsan — то же с UndefinedBehaviorSanitizer
+asan:
+	@bash scripts/sanitize.sh ${MODE:-asan}
+
+# --- Werror для CI ---
+sanitize-werror:
+	@bash scripts/sanitize-werror.sh

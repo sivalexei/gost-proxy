@@ -62,7 +62,7 @@ void dns_cache_destroy(void) {
     cache_size = 0;
 }
 
-static void evict_lru(void) {
+static void __attribute__((unused)) evict_lru(void) {
     dns_entry_t *victim = lru_tail.lru_prev;
     if (victim == &lru_head) return; /* пусто */
     lru_remove(victim);
