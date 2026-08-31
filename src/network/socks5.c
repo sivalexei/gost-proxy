@@ -42,6 +42,7 @@ static gost_session_t proxy_session;
 static quic_client_t *proxy_quic = NULL;
 static uint32_t *shared_ctr = NULL;
 static uint32_t next_cid = 1;
+static uint32_t next_cid_max = (1U << 31);  /* overflow protection at 2^31 */
 
 /* Демультиплексор */
 static packet_queue_t queues[MAX_SIMUL_CONNS];
@@ -214,6 +215,8 @@ static void* socks5_client_thread(void *arg) {
     }
     log_info("SOCKS5 CONNECT %s:%u",th,tp);
     uint32_t mcid=__sync_fetch_and_add(&next_cid,1);
+    /* P4-11: conn_id overflow — сброс при переполнении */
+    if (next_cid >= next_cid_max) { next_cid = 1; log_info("SOCKS5: conn_id counter reset (overflow protection)"); }
     log_info("SOCKS5: sending CONNECT, session_id=%llu, cid=%u", (unsigned long long)proxy_session.session_id, mcid);
     /* DNS-кэш с LRU и TTL 1 сутки, поддержка IPv6 */
     dns_af_t af;
