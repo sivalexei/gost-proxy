@@ -110,7 +110,7 @@ static void session_remove(int idx) {
     uint64_t sid = sessions[idx].session_id;
     if (sid != 0) {
         session_hash_remove(sid, idx);
-        /* Очищаем proxy_conns для этой session_id — TCP соединение неактивно */
+        /* Помечаем все proxy_conns для этой session — prevent: use-after-free */
         pthread_mutex_lock(&proxy_lock);
         for (int i = 0; i < MAX_PROXY_CONNS; i++) {
             if (proxy_conns[i].active && proxy_conns[i].session_id == sid) {
@@ -319,7 +319,9 @@ static void* tcp_to_udp_thread(void *arg) {
             ssize_t n = read(conn->tcp_fd, buf, sizeof(buf));
             if (n <= 0) { conn->active = 0; break; }
             gost_session_t *session = find_session(conn->session_id);
-            if (!session) break;
+            if (!session || !conn->active) break;
+            /* Prevent: use-after-free — проверяем fd перед записью */
+            if (conn->tcp_fd < 0 || !conn->active) break;
             size_t off = 0;
             while (off < (size_t)n) {
                 size_t chunk = (size_t)n - off;
@@ -327,7 +329,7 @@ static void* tcp_to_udp_thread(void *arg) {
                 gost_packet_t pkt;
                 if (protocol_pack_data(&pkt, conn->session_id, conn->conn_id, buf + off, chunk, session->expanded_key, session->nonce, &conn->send_counter, 1) == 0) {
                     /* Отправляем через тот же UDP-сокет сервера (port reuse) */
-                    quic_server_send(qs_global, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
+                    if (conn->active) quic_server_send(qs_global, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
                 }
                 off += chunk;
             }
@@ -567,8 +569,14 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             }
             pthread_mutex_lock(&proxy_lock);
             proxy_conn_t *conn = find_proxy_conn(session_id, dc_cid);
-            if (conn) { conn->active = 0; if (conn->tcp_fd >= 0) close(conn->tcp_fd); conn->tcp_fd = -1; }
+            if (conn) {
+                conn->active = 0;
+                if (conn->tcp_fd >= 0) close(conn->tcp_fd);
+                conn->tcp_fd = -1;
+            }
             pthread_mutex_unlock(&proxy_lock);
+            /* Подождём tcp_to_udp_thread (prevent: use-after-free) */
+            usleep(50000);  /* 50ms */
             session_reset_free_slot();
             break;
         }
