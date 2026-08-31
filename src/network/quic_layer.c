@@ -45,21 +45,9 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
     hs_pkt.magic = htonl(GOST_PROXY_MAGIC);
     hs_pkt.type = PKT_HANDSHAKE;
 
-    /* Генерация session_id из /dev/urandom вместо rand() */
-    uint64_t sid;
-    ssize_t rnd_ret = getrandom(&sid, sizeof(sid), 0);
-    if (rnd_ret < 0) {
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd >= 0) {
-            ssize_t rd = read(fd, &sid, sizeof(sid));
-            close(fd);
-            if (rd < (ssize_t)sizeof(sid)) { close(qc->server_fd); qc->server_fd = -1; return -1; }
-        } else {
-            close(qc->server_fd); qc->server_fd = -1; return -1;
-        }
-    }
-    /* session_id в host byte order, конвертируем при отправке */
-    hs_pkt.session_id = htonll(sid);
+    /* session_id = 0 — сервер сгенерирует его в handshake-ack
+     * prevent: client-chosen session_id allows session hijacking */
+    hs_pkt.session_id = 0;
 
     /* Усиленная аутентификация: CMAC(PSK, client_nonce || server_nonce) */
     uint8_t expanded_key[160] = {0};

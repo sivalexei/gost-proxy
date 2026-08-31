@@ -452,7 +452,6 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             if (check_rate_limit(client_addr) != 0) { break; }
             /* Извлекаем client_nonce из payload и аутентифицируем клиента */
             const gost_packet_t *hs_pkt = (const gost_packet_t *)data;
-            uint64_t client_sid = ntohll(hs_pkt->session_id);
 
             uint8_t client_nonce[8], server_nonce[8] = {0}, expected_auth[AUTH_TAG_SIZE];
             if (hs_pkt->payload[0] != 1) {  /* маркер наличия nonce */
@@ -478,8 +477,17 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 } else { break; }
             }
 
-            /* Создаём сессию */
-            uint64_t session_id = client_sid;
+            /* Создаём сессию: server-gенерируемый session_id
+             * prevent: client-chosen session_id allows session hijacking */
+            uint64_t session_id;
+            ssize_t sid_ret = getrandom(&session_id, sizeof(session_id), 0);
+            if (sid_ret < 0) {
+                int fd = open("/dev/urandom", O_RDONLY);
+                if (fd >= 0) {
+                    ssize_t rd = read(fd, &session_id, sizeof(session_id)); (void)rd;
+                    close(fd);
+                }
+            }
             expire_sessions();
             gost_session_t *session = create_session(session_id);
             if (!session) {

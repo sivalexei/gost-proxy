@@ -246,7 +246,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 3/10 выполнено | 🔴 ~6-12 дн. |
+| 6 | Безопасность (P4) | 4/10 выполнено | 🔴 ~4-10 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -277,7 +277,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 1 | **CTR nonce = session_id** | `session.c:create_session` | ✅ **ИСПРАВЛЕНО** — случайный nonce из getrandom(12 байт), передача через handshake |
 | 2 | **MAC без ключа в блоке** | `session.c:compute_mac` | ✅ **ИСПРАВЛЕНО** — настоящий CMAC-128 (NIST SP 800-38B): CBC-MAC chain с под-ключами μ₁/μ₂, LFSR-умножение в GF(2^128) |
 | 3 | **DISCONNECT без auth** | `server.c:handle_packet` | ✅ **ИСПРАВЛЕНО** — DISCONNECT с HMAC(session_id) вычисляется клиентом с EK, сервер проверяет перед удалением |
-| 4 | **Session ID от клиента** | `server.c:HANDSHAKE` | Клиент выбирает `session_id`, может захватить чужую сессию |
+| 4 | **Session ID от клиента** | `server.c:HANDSHAKE` | ✅ **ИСПРАВЛЕНО** — server-gенерируемый session_id из getrandom(8), клиент получает в handshake-ack
 
 ### Высокие (3)
 
