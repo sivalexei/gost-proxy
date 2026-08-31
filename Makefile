@@ -10,9 +10,11 @@ BUILD_DIR = build
 CRYPTO_SRC = $(SRC_DIR)/crypto/gost_cipher.c
 # Шифрование обеспечивается C-реализацией в gost_cipher.c (RFC 7801)
 # Ассемблерные реализации kuznyechik.asm исключены из репозитория.
+CMAC_SRC = $(SRC_DIR)/crypto/cmac_impl.c
 CORE_SRC = $(SRC_DIR)/core/server.c $(SRC_DIR)/core/client.c $(SRC_DIR)/core/session.c $(SRC_DIR)/core/obfuscation.c $(SRC_DIR)/core/dns_cache.c
 
 CRYPTO_OBJ = $(BUILD_DIR)/gost_cipher.o
+CMAC_OBJ = $(BUILD_DIR)/cmac_impl.o
 CONFIG_OBJ = $(BUILD_DIR)/config.o
 LOG_OBJ = $(BUILD_DIR)/log.o
 SOCKS5_OBJ = $(BUILD_DIR)/socks5.o
@@ -32,6 +34,9 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(BUILD_DIR)/gost_cipher.o: $(CRYPTO_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/cmac_impl.o: $(CMAC_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/server.o: $(SRC_DIR)/core/server.c | $(BUILD_DIR)
@@ -64,10 +69,10 @@ $(BUILD_DIR)/tcp_helpers.o: $(SRC_DIR)/core/tcp_helpers.asm | $(BUILD_DIR)
 $(BUILD_DIR)/dns_cache.o: $(SRC_DIR)/core/dns_cache.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(SERVER_OBJ)
+$(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(CMAC_OBJ) $(SERVER_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CLIENT_OBJ)
+$(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CMAC_OBJ) $(CLIENT_OBJ)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 test: $(BUILD_DIR)/gost-test $(BUILD_DIR)/test_protocol $(BUILD_DIR)/test_pack_roundtrip

@@ -45,4 +45,9 @@ void kuznyechik_compute_auth(const uint8_t *expanded_key,
                               const uint8_t *server_nonce,
                               uint8_t *auth_out);
 
+/* CMAC-128: NIST SP 800-38B §2.4 на базе Kuznyechik
+ * msg: данные, msg_len: длина, ek: expanded key, out: 16-байт MAC */
+void kuznyechik_cmac_128(const uint8_t *msg, size_t msg_len,
+                          const uint8_t *ek, uint8_t *out);
+
 #endif /* KUZNYECHIK_H */

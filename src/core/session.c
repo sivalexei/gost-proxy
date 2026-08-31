@@ -61,19 +61,7 @@ uint32_t protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len,
     return padding_len;
 }
 static void compute_mac(const uint8_t *pay, size_t plen, const uint8_t *ek, uint8_t *mac) {
-    uint8_t b[16]; memset(b,0,16);
-    /* Включаем длину в MAC: XOR-им старшие 8 байт с plen */
-    uint64_t plen_u64 = plen;
-    b[0] ^= (uint8_t)(plen_u64 >> 56);
-    b[1] ^= (uint8_t)(plen_u64 >> 48);
-    b[2] ^= (uint8_t)(plen_u64 >> 40);
-    b[3] ^= (uint8_t)(plen_u64 >> 32);
-    b[4] ^= (uint8_t)(plen_u64 >> 24);
-    b[5] ^= (uint8_t)(plen_u64 >> 16);
-    b[6] ^= (uint8_t)(plen_u64 >> 8);
-    b[7] ^= (uint8_t)plen_u64;
-    for(size_t o=0;o<plen;o+=16){size_t bl=(plen-o>16)?16:(plen-o);for(size_t i=0;i<bl;i++)b[i]^=pay[o+i];}
-    memcpy(mac,b,16); kuznyechik_encrypt_block(mac,ek);
+    kuznyechik_cmac_128(pay, plen, ek, mac);
 }
 static void make_ctr_nonce(const uint8_t *sn, uint32_t c, uint8_t *o16) {
     memcpy(o16,sn,NONCE_SIZE); o16[12]=(c>>24)&0xFF;o16[13]=(c>>16)&0xFF;o16[14]=(c>>8)&0xFF;o16[15]=c&0xFF;

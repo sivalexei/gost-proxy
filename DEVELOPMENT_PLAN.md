@@ -246,7 +246,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 1/10 выполнено | 🔴 ~10-16 дн. |
+| 6 | Безопасность (P4) | 2/10 выполнено | 🔴 ~8-14 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -256,7 +256,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 2. CI (.github/workflows): добавить make sanitize-werror, make asan
 3. Документация: обновить README с примерами запуска и настройки
 4. **Начать Этап 6: Безопасность (P4)** — приоритет:
-   - P4-1: CTR nonce уникальность (🔴 критическое)
+   - P4-1: CTR nonce уникальность (✅ выполнено)
    - P4-2: Auth-tag CMAC с ключом (🔴 критическое)
    - P4-3: DISCONNECT с аутентификацией (🔴 критическое)
    - P4-4: Server-generated session ID (🔴 критическое)
@@ -274,7 +274,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | # | Уязвимость | Код | Статус |
 |---|-----------|-----|--------|
 | 1 | **CTR nonce = session_id** | `session.c:create_session` | ✅ **ИСПРАВЛЕНО** — случайный nonce из getrandom(12 байт), передача через handshake |
-| 2 | **MAC без ключа в блоке** | `session.c:compute_mac` | 🔴 EK используется только в финале, не в CBC-MAC. MAC(A) == E(0 XOR A) — вычисляется без ключа |
+| 2 | **MAC без ключа в блоке** | `session.c:compute_mac` | ✅ **ИСПРАВЛЕНО** — настоящий CMAC-128 (NIST SP 800-38B): CBC-MAC chain с под-ключами μ₁/μ₂, LFSR-умножение в GF(2^128) |
 | 3 | **DISCONNECT без auth** | `server.c:handle_packet` | `session_id` в открытом заголовке — любой удалит чужую сессию |
 | 4 | **Session ID от клиента** | `server.c:HANDSHAKE` | Клиент выбирает `session_id`, может захватить чужую сессию |
 
