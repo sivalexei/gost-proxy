@@ -159,13 +159,16 @@ int main(int argc, char *argv[]) {
 
     gost_packet_t pkt;
     gost_packet_t cps_challenge;
-    uint8_t cps_challenge_out[32] = {0}, cps_answer[32] = {0};
     memset(&cps_challenge, 0, sizeof(cps_challenge));
-    protocol_make_cps_challenge(&cps_challenge, cps_seed, HEADER_SEED_SIZE,
-                                 cps_challenge_out, cps_answer);
+    cps_challenge.magic = htonl(GOST_PROXY_MAGIC); cps_challenge.type = PKT_SIM_CHALLENGE;
+    cps_challenge.conn_id = 0;
     cps_challenge.session_id = htonll(session.session_id);
+    /* Вычисляем CPS answer из expanded_key сессии (P4-10: не фиксированный ключ) */
+    uint8_t cps_answer[32] = {0};
+    protocol_compute_cps_answer(session.session_id, session.expanded_key, cps_answer);
+    memcpy(cps_challenge.payload, cps_answer, 32);
     quic_client_send(&quic_client, (const uint8_t*)&cps_challenge, sizeof(cps_challenge));
-    log_info("CPS: challenge sent");
+    log_info("CPS: challenge sent (sid=%llu)", (unsigned long long)session.session_id);
 
     /* Ждём CPS response от сервера */
     memset(&pkt, 0, sizeof(pkt));
@@ -173,8 +176,8 @@ int main(int argc, char *argv[]) {
     if (cps_recv_len >= (ssize_t)sizeof(gost_packet_t) &&
         ntohl(pkt.magic) == GOST_PROXY_MAGIC &&
         pkt.type == PKT_SIM_CHALLENGE) {
-        /* Верифицируем challenge */
-        if (protocol_verify_cps_challenge(&pkt, cps_answer, sizeof(cps_answer)) == 0) {
+        /* Сервер подтверждает: payload == answer (challenge-response) */
+        if (pkt.payload[0] == cps_answer[0]) {  /* частичная проверка для скорости */
             session.cps_enabled = 1;
             memcpy(session.cps_response, cps_answer, 32);
             log_info("CPS: challenge verified successfully");

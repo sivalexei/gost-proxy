@@ -533,8 +533,12 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             gost_session_t *session = find_session(session_id);
             if (!session) { session_reset_free_slot(); session = find_session(session_id); }
             if (!session) { log_warn("CHALLENGE: session not found for sid=%llu", (unsigned long long)session_id); break; }
-            uint8_t answer[32] = {0};
-            int verify_ret = protocol_verify_cps_challenge(pkt, answer, sizeof(answer));
+            /* Вычисляем answer из expanded_key сессии (P4-10: CPS не на фиксированном ключе) */
+            uint8_t answer[32];
+            protocol_compute_cps_answer(session_id, session->expanded_key, answer);
+            /* Проверяем: client's answer должен совпадать с challenge
+             * prevent: answer = CMAC(session_id, expanded_key) — только владелец PSK вычислит правильно */
+            int verify_ret = (memcmp(pkt->payload, answer, 32) == 0) ? 0 : -1;
             log_debug("CHALLENGE: verify=%d for sid=%llu", verify_ret, (unsigned long long)session_id);
             if (verify_ret == 0) {
                 session->cps_enabled = 1;

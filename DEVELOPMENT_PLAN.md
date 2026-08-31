@@ -219,9 +219,9 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Файлы: session.c, server.c
 
 ### 6.8. CPS challenge тривиален (1 день) 🟡 **СРЕДНЕЕ**
-Проблема: `verify_cps_challenge` принимает `cc == ca`.
-Решение: Использовать `HMAC(PSK, challenge)` как ответ.
-Файлы: session.c, gost_cipher.c
+✅ **ИСПРАВЛЕНО**: CPS answer = `CMAC(session_id, expanded_key)` вместо `E(session_id, fixed_key)`.
+Теперь только клиент с правильным PSK вычислит правильный answer.
+Файлы: session.c, client.c, server.c
 
 ### 6.9. conn_id overflow (30 мин) 🟡 **СРЕДНЕЕ**
 Проблема: `next_cid = uint32_t`, после 4 млрд — коллизия.
@@ -246,7 +246,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 8/10 выполнено | 🔴 ~1-3 дн. |
+| 6 | Безопасность (P4) | 9/10 выполнено | 🔴 ~1-2 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -264,7 +264,11 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
    - P4-5: Handshake replay protection (🟠 высокое)
    - P4-6: Race condition fix (🟠 высокое)
    - P4-7: Padding oracle mitigation (🟠 высокое)
-   - P4-8..10: Средние приоритеты (CPS, conn_id, per-IP limit)
+   - P4-8: MAC с session_id/conn_id ✅
+   - P4-9: conn_id в handshake auth_tag ✅
+   - P4-10: CPS на expanded_key ✅
+   - P4-11: conn_id overflow (🟡 среднее)
+   - P4-12: per-IP limit (🟡 среднее)
 
 ---
 

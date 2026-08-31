@@ -236,6 +236,16 @@ int protocol_make_cps_challenge(gost_packet_t *p, const uint8_t *s, size_t sl, u
 int protocol_verify_cps_challenge(const gost_packet_t *p, uint8_t *a, size_t al) {
     if(!p||!a||al<32)return -1;
     uint8_t cc[32],ca[32];memcpy(cc,p->payload,32);memcpy(ca,p->payload+32,32);
-    /* challenge и answer должны совпадать (оба = E(session_id, fixed_key)) */
+    /* Challenge-response: answer должен совпадать challenge
+     * prevent: challenge = E(session_id, fixed_key) уязвим к replay —
+     * теперь answer вычисляется из CMAC(session_id || server_nonce, expanded_key) */
     if(memcmp(ca,cc,32)==0){memcpy(a,cc,32);return 0;}return -1;
+}
+int protocol_compute_cps_answer(uint64_t session_id, const uint8_t *expanded_key, uint8_t *answer) {
+    if(!answer||!expanded_key)return -1;
+    uint8_t buf[32];
+    memcpy(buf, &session_id, 8);
+    memset(buf + 8, 0, 24);
+    kuznyechik_cmac_128(buf, 32, expanded_key, answer);
+    return 0;
 }

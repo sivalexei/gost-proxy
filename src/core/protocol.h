@@ -35,6 +35,7 @@ int protocol_make_fake_tls(gost_packet_t *pkt, const uint8_t *seed, size_t seed_
 
 /* Проверка CPS challenge — возвращает 0 если challenge верный */
 int protocol_verify_cps_challenge(const gost_packet_t *pkt, uint8_t *answer, size_t answer_len);
+int protocol_compute_cps_answer(uint64_t session_id, const uint8_t *expanded_key, uint8_t *answer);
 
 /* Упаковка пакета данных с обфускацией
  * session_id — в host byte order (НЕ htonll)
