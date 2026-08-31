@@ -234,12 +234,16 @@ int main(int argc, char *argv[]) {
 
     socks5_stop();
 
-    /* Отправляем disconnect */
+    /* Отправляем disconnect с аутентификацией */
     gost_packet_t disconnect;
     memset(&disconnect, 0, sizeof(disconnect));
     disconnect.magic = htonl(GOST_PROXY_MAGIC);
     disconnect.type = PKT_DISCONNECT;
     disconnect.session_id = htonll(session.session_id);
+    uint64_t dc_sid = session.session_id;
+    compute_disconnect_auth(dc_sid, 0, session.expanded_key, disconnect.auth_tag);
+    log_info("DISCONNECT: sid=%llu auth=%02x%02x%02x%02x", (unsigned long long)session.session_id,
+            disconnect.auth_tag[0], disconnect.auth_tag[1], disconnect.auth_tag[2], disconnect.auth_tag[3]);
     quic_client_send(&quic_client, (const uint8_t*)&disconnect, sizeof(disconnect));
 
     log_info("Клиент завершается...");

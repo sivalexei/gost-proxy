@@ -79,4 +79,9 @@ int protocol_create_handshake(
     const uint8_t *session_nonce
 );
 
+/* Auth-tag для DISCONNECT: HMAC(session_id, conn_id) с EK
+ * prevent: anyone can disconnect another user's session */
+void compute_disconnect_auth(uint64_t session_id, uint32_t conn_id,
+                              const uint8_t *expanded_key, uint8_t *auth);
+
 #endif /* PROTOCOL_H */

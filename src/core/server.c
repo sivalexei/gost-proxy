@@ -545,6 +545,14 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             uint64_t session_id = ntohll(pkt->session_id);
             uint32_t dc_cid = ntohl(pkt->conn_id);
             gost_session_t *session = find_session(session_id);
+            /* Аутентификация DISCONNECT: проверяем auth_tag через EK */
+            uint64_t verify_sid = session_id;
+            uint8_t expected_auth[AUTH_TAG_SIZE];
+            compute_disconnect_auth(verify_sid, dc_cid, session ? session->expanded_key : NULL, expected_auth);
+            if (session && memcmp(pkt->auth_tag, expected_auth, AUTH_TAG_SIZE) != 0) {
+                log_warn("DISCONNECT: auth FAIL for sid=%llu", (unsigned long long)session_id);
+                break;  /* Отказ — неправильный auth_tag */
+            }
             if (session) {
                 int idx = session_hash[session_hash_func(session_id)];
                 session_remove(idx);

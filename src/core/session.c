@@ -63,6 +63,19 @@ uint32_t protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len,
 static void compute_mac(const uint8_t *pay, size_t plen, const uint8_t *ek, uint8_t *mac) {
     kuznyechik_cmac_128(pay, plen, ek, mac);
 }
+
+/* Auth-tag для DISCONNECT: HMAC(session_id, conn_id) с EK
+ * prevent: anyone can disconnect another user's session */
+void compute_disconnect_auth(uint64_t session_id, uint32_t conn_id,
+                              const uint8_t *ek, uint8_t *auth)
+{
+    uint8_t buf[16];
+    memcpy(buf, &session_id, 8);
+    memcpy(buf + 8, &conn_id, 4);
+    memset(buf + 12, 0, 4);  /* padding to 16 bytes */
+    kuznyechik_cmac_128(buf, 16, ek, auth);
+}
+
 static void make_ctr_nonce(const uint8_t *sn, uint32_t c, uint8_t *o16) {
     memcpy(o16,sn,NONCE_SIZE); o16[12]=(c>>24)&0xFF;o16[13]=(c>>16)&0xFF;o16[14]=(c>>8)&0xFF;o16[15]=c&0xFF;
 }
