@@ -192,9 +192,10 @@ int main(int argc, char *argv[]) {
 
     /* Запускаем SOCKS5-прокси */
     printf("\n");
+    uint16_t socks_port = cfg.port;
     printf("========================================\n");
     printf("  SOCKS5 прокси готов к работе!\n");
-    printf("  Адрес:  127.0.0.1:%d\n", SOCKS5_PORT);
+    printf("  Адрес:  127.0.0.1:%d\n", socks_port);
     printf("  Тип:    SOCKS v5\n");
     printf("========================================\n");
     printf("\n");
@@ -202,12 +203,12 @@ int main(int argc, char *argv[]) {
     printf("  1. Откройте Настройки → Сеть → Настройка подключения\n");
     printf("  2. Выберите: Ручная настройка прокси\n");
     printf("  3. SOCKS Host: 127.0.0.1\n");
-    printf("  4. Порт: %d\n", SOCKS5_PORT);
+    printf("  4. Порт: %d\n", socks_port);
     printf("  5. Версия: SOCKS v5\n");
     printf("  6. Галочка: Прокси для DNS при использовании SOCKS v5\n");
     printf("\n");
 
-    if (socks5_start(SOCKS5_PORT, cfg.server_ip, cfg.server_port, expanded_key,
+    if (socks5_start(socks_port, cfg.server_ip, cfg.server_port, expanded_key,
                      session.nonce, session.session_id,
                      &quic_client, &session.counter) != 0) {
         printf("Ошибка запуска SOCKS5-прокси\n");

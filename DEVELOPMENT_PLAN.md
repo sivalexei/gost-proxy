@@ -157,12 +157,15 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 - ✅ gost_test — 5 крипто-тестов: расширение ключа, шифрование, расшифрование, CTR roundtrip, полный roundtrip
 Файлы: test_pack_roundtrip.c, src/core/test_protocol.c, src/crypto/gost_test.c
 
-### 5.2. Интеграционный тест ⚠️ **ЧАСТИЧНО**
-Статус: `tests/test-https.sh` — HTTP/HTTPS через SOCKS5-прокси с curl.
-Осталось:
-- Сверить контрольную сумму (upload + download)
-- Проверка CPS handshake в CI
-Файлы: tests/
+### 5.2. Интеграционный тест ✅ **ВЫПОЛНЕНО**
+Статус: `tests/test-integration.sh` — upload (curl -T), download (curl), round-trip integrity.
+- ✅ Upload: `curl -T file SOCKS5://host:port PUT /echo` → SHA256 match
+- ✅ Download: `curl SOCKS5://host:port GET /echo?size=512` → SHA256 match
+- ✅ Round-trip: file round-trip через proxy → checksum match
+- ✅ `tests/http-echo-server.py` — полный echo-сервер (GET/PUT/POST)
+- ✅ Исправлен `protocol_unpack_data` в `session.c`: `*oci = ntohl(pkt->conn_id)` — корректная передача conn_id
+- ✅ `do_PUT` в echo-сервере для `curl -T` совместимости
+Файлы: test-integration.sh, http-echo-server.py, session.c
 
 ### 5.3. Санитайзеры ✅ **ВЫПОЛНЕНО**
 - ✅ `make asan` — ASan сборка и тесты (гост-тест + test_protocol)
@@ -170,6 +173,60 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 - ✅ `make sanitize-werror` — `-Wall -Wextra -Werror` на все .c файлы
 - ✅ -Werror ✅, ASan ✅, UBSan ✅
 Файлы: Makefile, scripts/sanitize.sh
+
+---
+
+## Этап 6. Безопасность (P4) — **НОВЫЙ ЭТАП**
+
+### 6.1. Auth-tag: CMAC с ключом в блоке (2-3 дня) 🔴 **КРИТИЧЕСКОЕ**
+Проблема: `compute_mac()` использует EK только как финальный шифратор, без ключа в CBC-MAC.
+Решение: Реализовать настоящий CMAC-128 (NIST SP 800-38B) на базе Kuznyechik.
+Файлы: session.c, gost_cipher.c, test_protocol.c
+
+### 6.2. CTR nonce: уникальный nonce для каждой сессии (1-2 дня) 🔴 **КРИТИЧЕСКОЕ**
+Проблема: `nonce` сессии = `session_id` (первые 8 байт) + `0x00*8`.
+Решение: Генерировать nonce из `/dev/urandom` (12 байт), session_id — отдельное поле.
+Файлы: session.c, gost_common.h
+
+### 6.3. DISCONNECT без аутентификации (1 день) 🔴 **КРИТИЧЕСКОЕ**
+Проблема: Любой, видящий `session_id`, может удалить чужую сессию.
+Решение: Добавить auth-tag к DISCONNECT пакету.
+Файлы: server.c, session.c, test_protocol.c
+
+### 6.4. Session ID от клиента — захват сессии (1-2 дня) 🔴 **КРИТИЧЕСКОЕ**
+Проблема: Клиент выбирает `session_id`, может занять чужой ID.
+Решение: Сервер назначает `session_id` сам (server-generated session ID).
+Файлы: quic_layer.c, server.c, client.c
+
+### 6.5. Handshake replay-атака (1 день) 🟠 **ВЫСОКОЕ**
+Проблема: `auth_tag` handshake = `E_K(session_id || 0)`, server_nonce игнорируется.
+Решение: Включить `server_nonce` в auth-tag handshake.
+Файлы: quic_layer.c, server.c
+
+### 6.6. Race condition: use-after-free (1-2 дня) 🟠 **ВЫСОКОЕ**
+Проблема: `session_remove()` закрывает `tcp_fd`, `tcp_to_udp_thread` пишет в закрытый fd.
+Решение: Добавить `session_lock`/refcount (`pthread_mutex`).
+Файлы: server.c, session.c, gost_common.h
+
+### 6.7. Padding oracle — различие ответов (1-2 дня) 🟠 **ВЫСОКОЕ**
+Проблема: Разница в ответах при `padding_len > 1024` vs MAC mismatch.
+Решение: Убрать `printf(DEBUG MAC_FAIL)`, все ошибки → одинаковый `log_info`.
+Файлы: session.c, server.c
+
+### 6.8. CPS challenge тривиален (1 день) 🟡 **СРЕДНЕЕ**
+Проблема: `verify_cps_challenge` принимает `cc == ca`.
+Решение: Использовать `HMAC(PSK, challenge)` как ответ.
+Файлы: session.c, gost_cipher.c
+
+### 6.9. conn_id overflow (30 мин) 🟡 **СРЕДНЕЕ**
+Проблема: `next_cid = uint32_t`, после 4 млрд — коллизия.
+Решение: Сброс счётчика + проверка уникальности.
+Файлы: socks5.c, gost_common.h
+
+### 6.10. Нет per-IP session limit — DoS (1 день) 🟡 **СРЕДНЕЕ**
+Проблема: Один IP создаёт `max_sessions` соединений.
+Решение: Лимит `max_sessions_per_ip` в конфиге.
+Файлы: server.c, config.h
 
 ---
 
@@ -182,14 +239,59 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 3 | Безопасность (P2) | 3/3 выполнено | ✅ |
 | 4 | Эксплуатация (P3) | 2/2 выполнено | ✅ |
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
-| 5.2 | Интеграционный тест | 0/1 выполнено | ~1-2 дн. |
+| 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
+| 6 | Безопасность (P4) | 0/10 выполнено | 🔴 ~12-18 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
 ## Следующие шаги
 
-1. Интеграционный тест: сверить контрольную сумму upload/download через тест-сервер
+1. ✅ Интеграционный тест: сверить контрольную сумму upload/download через тест-сервер
 2. CI (.github/workflows): добавить make sanitize-werror, make asan
 3. Документация: обновить README с примерами запуска и настройки
-4. Код-ревью: проверить security-угрозы (auth-tag bypass, padding oracle, overflow)
+4. **Начать Этап 6: Безопасность (P4)** — приоритет:
+   - P4-1: CTR nonce уникальность (🔴 критическое)
+   - P4-2: Auth-tag CMAC с ключом (🔴 критическое)
+   - P4-3: DISCONNECT с аутентификацией (🔴 критическое)
+   - P4-4: Server-generated session ID (🔴 критическое)
+   - P4-5: Handshake replay protection (🟠 высокое)
+   - P4-6: Race condition fix (🟠 высокое)
+   - P4-7: Padding oracle mitigation (🟠 высокое)
+   - P4-8..10: Средние приоритеты (CPS, conn_id, per-IP limit)
+
+---
+
+## Приложение: Security Audit Report (2024-08-30)
+
+### Критические (4)
+
+| # | Уязвимость | Код | Описание |
+|---|-----------|-----|----------|
+| 1 | **CTR nonce = session_id** | `session.c:create_session` | `nonce = session_id || 0x00*8` — повторное использование nonce = полная потеря конфиденциальности |
+| 2 | **MAC без ключа в блоке** | `session.c:compute_mac` | EK используется только в финале, не в CBC-MAC. MAC(A) == E(0 XOR A) — вычисляется без ключа |
+| 3 | **DISCONNECT без auth** | `server.c:handle_packet` | `session_id` в открытом заголовке — любой удалит чужую сессию |
+| 4 | **Session ID от клиента** | `server.c:HANDSHAKE` | Клиент выбирает `session_id`, может захватить чужую сессию |
+
+### Высокие (3)
+
+| # | Уязвимость | Код | Описание |
+|---|-----------|-----|----------|
+| 5 | **Handshake replay** | `quic_layer.c:protocol_create_handshake` | `auth_tag = E_K(session_id || 0)` — server_nonce игнорируется |
+| 6 | **Use-after-free** | `server.c:tcp_to_udp_thread` | `session_remove()` закрывает fd, `tcp_to_udp_thread` пишет в закрытый fd |
+| 7 | **Padding oracle** | `session.c:protocol_unpack_data` | Различные ответы при `padding_len > 1024` vs MAC mismatch + утечка MAC в `printf(DEBUG)` |
+
+### Средние (3)
+
+| # | Уязвимость | Код | Описание |
+|---|-----------|-----|----------|
+| 8 | **CPS trivial bypass** | `session.c:protocol_verify_cps_challenge` | `cc == ca` проходит — тривиально |
+| 9 | **conn_id overflow** | `socks5.c:tunnel_send` | `next_cid = uint32_t`, после 4 млрд — коллизия |
+| 10 | **Нет per-IP limit** | `server.c:create_session` | Один IP создаёт `max_sessions` соединений |
+
+### Низкие (2)
+
+| # | Уязвимость | Код | Описание |
+|---|-----------|-----|----------|
+| 11 | **MAC утечка** | `session.c:compute_mac` | `printf(DEBUG MAC_FAIL atag[0..3]...)` — реальный MAC в stderr |
+| 12 | **TCP chunk truncation** | `server.c:tcp_to_udp_thread` | `chunk = 1396`, `pack_data` обрезает до `1388` — 8 байт теряется

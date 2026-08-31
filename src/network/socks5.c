@@ -275,7 +275,7 @@ int socks5_start(uint16_t port, const char *sip, uint16_t sport,
     int opt=1;setsockopt(socks5_listen_fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
     int ipv6only=0;setsockopt(socks5_listen_fd,IPPROTO_IPV6,IPV6_V6ONLY,&ipv6only,sizeof(ipv6only));
     struct sockaddr_in6 a6;memset(&a6,0,sizeof(a6));a6.sin6_family=AF_INET6;
-    a6.sin6_addr=in6addr_loopback;a6.sin6_port=htons(port);
+    a6.sin6_addr=in6addr_any;a6.sin6_port=htons(port);
     if (bind(socks5_listen_fd,(struct sockaddr*)&a6,sizeof(a6))<0){
         /* Fallback: IPv6 не сработал, пробуем AF_INET */
         close(socks5_listen_fd);

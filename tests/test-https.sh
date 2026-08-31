@@ -5,7 +5,7 @@
 set -euo pipefail
 
 TARGET="${1:-example.com}"
-SOCKS5_PORT="${2:-1081}"
+SOCKS5_PORT="${2:-11081}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

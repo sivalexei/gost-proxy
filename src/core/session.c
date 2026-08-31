@@ -124,7 +124,7 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
 }
 int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     uint32_t *oci, const uint8_t *ek, const uint8_t *nonce, uint32_t *ctr, uint8_t obf_dir) {
-    (void)oci;
+    if(oci) *oci = ntohl(pkt->conn_id);
     log_info("protocol_unpack_data: START");
     if(!pkt||!data||!dl||!ek||!nonce||!ctr){printf("DEBUG PARAM_FAIL\n"); return -1;}
     log_debug("protocol_unpack_data: params OK");
