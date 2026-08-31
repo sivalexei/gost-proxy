@@ -246,7 +246,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 4/10 выполнено | 🔴 ~4-10 дн. |
+| 6 | Безопасность (P4) | 5/10 выполнено | 🔴 ~2-8 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -283,7 +283,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 | # | Уязвимость | Код | Описание |
 |---|-----------|-----|----------|
-| 5 | **Handshake replay** | `quic_layer.c:protocol_create_handshake` | `auth_tag = E_K(session_id || 0)` — server_nonce игнорируется |
+| 5 | **Handshake replay** | `session.c:protocol_create_handshake` | ✅ **ИСПРАВЛЕНО** — auth_tag = CMAC(session_id || server_nonce || session_nonce), клиент верифицирует перед использованием
 | 6 | **Use-after-free** | `server.c:tcp_to_udp_thread` | `session_remove()` закрывает fd, `tcp_to_udp_thread` пишет в закрытый fd |
 | 7 | **Padding oracle** | `session.c:protocol_unpack_data` | Различные ответы при `padding_len > 1024` vs MAC mismatch + утечка MAC в `printf(DEBUG)` |
 

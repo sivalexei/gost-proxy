@@ -121,23 +121,29 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
 
-    /* Проверяем ответ сервера: CMAC(PSK, client_nonce || server_nonce) */
+    /* Проверяем ответ сервера: auth_tag = CMAC(session_id || server_nonce || session_nonce)
+     * prevent: replay handshake без правильного nonce */
     if (has_auth && r->payload[0] == 1) {
-        uint8_t exp_server_nonce[8], exp_auth[AUTH_TAG_SIZE];
-        /* Извлекаем server_nonce из ответа */
+        uint8_t exp_server_nonce[8], exp_session_nonce[NONCE_SIZE], exp_auth[AUTH_TAG_SIZE];
+        /* Извлекаем server_nonce и session_nonce из ответа */
         memcpy(exp_server_nonce, r->payload + 1, 8);
-        kuznyechik_compute_auth(expanded_key, client_nonce, exp_server_nonce, exp_auth);
-        /* Сравниваем auth_tag сервера */
+        memcpy(exp_session_nonce, r->payload + 9, NONCE_SIZE);
+        /* Вычисляем CMAC(session_id || server_nonce || session_nonce) */
+        uint64_t sid_net;
+        memcpy(&sid_net, &r->session_id, 8);
+        uint8_t verify_buf[32];
+        memcpy(verify_buf, &sid_net, 8);
+        memcpy(verify_buf + 8, exp_server_nonce, 8);
+        memcpy(verify_buf + 16, exp_session_nonce, NONCE_SIZE);
+        kuznyechik_cmac_128(verify_buf, 8 + 8 + NONCE_SIZE, expanded_key, exp_auth);
+        /* Сравниваем auth_tag */
         if (memcmp(r->auth_tag, exp_auth, AUTH_TAG_SIZE) != 0) {
             log_error("QUIC: server auth failed (CMAC mismatch)");
             close(qc->server_fd); qc->server_fd = -1; return -1;
         }
         qc->active = 1;
-        uint64_t sid_net;
-        memcpy(&sid_net, &r->session_id, 8);
         *(uint64_t*)qc->session_id = ntohll(sid_net);
-        /* Извлекаем session_nonce (12 байт) из payload[1..12] */
-        memcpy(qc->nonce, r->payload + 1, NONCE_SIZE);
+        memcpy(qc->nonce, exp_session_nonce, NONCE_SIZE);
         log_info("QUIC: handshake OK (sid=%llu, nonce=%02x..%02x)",
                 (unsigned long long)ntohll(r->session_id), qc->nonce[0], qc->nonce[11]);
     } else {
