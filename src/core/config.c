@@ -83,6 +83,7 @@ void config_defaults(gost_config_t *cfg) {
     strcpy(cfg->bind_addr, "0.0.0.0");
     cfg->port = 10443;
     cfg->max_sessions = 256;
+    cfg->max_sessions_per_ip = 10;  /* P4-12: default 10 sessions per IP */
     cfg->session_timeout = 300;
     cfg->rate_limit = 10.0;      /* 10 пакетов в секунду */
     cfg->rate_burst = 20;       /* burst до 20 пакетов */
@@ -149,6 +150,9 @@ int config_load(gost_config_t *cfg, const char *path) {
 
     if (json_get_int(json, "max_sessions", &ival) == 0)
         cfg->max_sessions = ival;
+
+    if (json_get_int(json, "max_sessions_per_ip", &ival) == 0)
+        cfg->max_sessions_per_ip = ival;  /* P4-12: per-IP limit */
 
     if (json_get_int(json, "session_timeout", &ival) == 0)
         cfg->session_timeout = ival;

@@ -229,8 +229,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Файлы: socks5.c, gost_common.h
 
 ### 6.10. Нет per-IP session limit — DoS (1 день) 🟡 **СРЕДНЕЕ**
-Проблема: Один IP создаёт `max_sessions` соединений.
-Решение: Лимит `max_sessions_per_ip` в конфиге.
+✅ **ИСПРАВЛЕНО**: `max_sessions_per_ip=10` по умолчанию, проверка per-IP лимита в handshake.
 Файлы: server.c, config.h
 
 ---
@@ -246,7 +245,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 9/10 выполнено | 🔴 ~1-2 дн. |
+| 6 | Безопасность (P4) | **10/10 выполнено** ✅ | 🟢 Всё исправлено |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -267,8 +266,8 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
    - P4-8: MAC с session_id/conn_id ✅
    - P4-9: conn_id в handshake auth_tag ✅
    - P4-10: CPS на expanded_key ✅
-   - P4-11: conn_id overflow (🟡 среднее)
-   - P4-12: per-IP limit (🟡 среднее)
+   - P4-11: conn_id overflow ✅
+   - P4-12: per-IP limit ✅
 
 ---
 

@@ -70,6 +70,11 @@ static _Atomic int free_slot_next = 0;
 static uint8_t expanded_key[160];
 static gost_config_t cfg;
 
+/* Per-IP session limit: хеш IP -> счётчик активных сессий */
+#define IP_HASH_SIZE 256
+static int ip_session_count[IP_HASH_SIZE];
+static pthread_mutex_t ip_count_lock = PTHREAD_MUTEX_INITIALIZER;
+
 typedef struct {
     int      tcp_fd;
     uint64_t session_id;
@@ -102,6 +107,24 @@ static inline void session_hash_remove(uint64_t sid, int idx) {
         }
         prev = cur;
     }
+}
+
+/* Per-IP session tracking */
+static inline uint32_t ip_hash_func(const struct sockaddr_in *addr) {
+    return (uint32_t)(addr->sin_addr.s_addr % IP_HASH_SIZE);
+}
+static inline void ip_count_inc(const struct sockaddr_in *addr) {
+    int h = ip_hash_func(addr);
+    pthread_mutex_lock(&ip_count_lock); ip_session_count[h]++; pthread_mutex_unlock(&ip_count_lock);
+}
+static inline void ip_count_dec(const struct sockaddr_in *addr) {
+    int h = ip_hash_func(addr);
+    pthread_mutex_lock(&ip_count_lock); if(ip_session_count[h]>0) ip_session_count[h]--; pthread_mutex_unlock(&ip_count_lock);
+}
+static inline int ip_count_get(const struct sockaddr_in *addr) {
+    int h = ip_hash_func(addr), c;
+    pthread_mutex_lock(&ip_count_lock); c = ip_session_count[h]; pthread_mutex_unlock(&ip_count_lock);
+    return c;
 }
 
 /* Удаление сессии по индексу */
@@ -150,6 +173,7 @@ static void expire_sessions(void) {
             sessions[i].last_activity > 0 &&
             now - sessions[i].last_activity > cfg.session_timeout) {
             log_debug("Expire session %llu", (unsigned long long)sessions[i].session_id);
+            ip_count_dec(&sessions[i].client_addr);
             session_remove(i);
         }
     }
@@ -491,6 +515,11 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 }
             }
             expire_sessions();
+            /* P4-12: per-IP session limit — защита от одного IP */
+            if (cfg.max_sessions_per_ip > 0 && ip_count_get(client_addr) >= cfg.max_sessions_per_ip) {
+                log_warn("HANDSHAKE: per-IP limit reached (%d) from %s", cfg.max_sessions_per_ip, inet_ntoa(client_addr->sin_addr));
+                pthread_mutex_unlock(&sessions_lock); return;
+            }
             gost_session_t *session = create_session(session_id);
             if (!session) {
                 expire_sessions();
@@ -499,6 +528,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             }
             session->client_addr = *client_addr;
             session->client_addr_len = addr_len;
+            ip_count_inc(client_addr);
 
             /* Отправляем handshake_ack с session_nonce и auth_tag */
             gost_packet_t response;

@@ -9,6 +9,7 @@ typedef struct {
     char     bind_addr[64];
     uint16_t port;
     int      max_sessions;
+    int      max_sessions_per_ip;
     int      session_timeout;
     double   rate_limit;    /* токенов в секунду */
     int      rate_burst;    /* макс. burst (размер бакета) */
