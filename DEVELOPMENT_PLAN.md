@@ -246,7 +246,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 7/10 выполнено | 🔴 ~1-5 дн. |
+| 6 | Безопасность (P4) | 8/10 выполнено | 🔴 ~1-3 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -292,7 +292,8 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | # | Уязвимость | Код | Описание |
 |---|-----------|-----|----------|
 | 8 | **MAC без session_id/conn_id** | `session.c:protocol_pack_data` | ✅ **ИСПРАВЛЕНО** — `CMAC(type || session_id || conn_id || payload)`, защита от подмены ID |
-| 9 | **conn_id overflow** | `socks5.c:tunnel_send` | `next_cid = uint32_t`, после 4 млрд — коллизия |
+| 9 | **conn_id в handshake** | `session.c:protocol_create_handshake` | ✅ **ИСПРАВЛЕНО** — `CMAC(session_id || server_nonce || session_nonce || conn_id)`, защита от conn_id substitution |
+| 10 | **conn_id overflow** | `socks5.c:tunnel_send` | `next_cid = uint32_t`, после 4 млрд — коллизия |
 | 10 | **Нет per-IP limit** | `server.c:create_session` | Один IP создаёт `max_sessions` соединений |
 
 ### Низкие (2)

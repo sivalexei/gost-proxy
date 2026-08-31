@@ -27,6 +27,7 @@ typedef struct quic_client {
     char  server_addr[QUIC_SERVER_ADDR_MAX];
     uint16_t server_port;
     uint8_t session_id[8];
+    uint32_t conn_id;        /* connection ID от сервера */
     uint8_t nonce[NONCE_SIZE]; /* 12-байтный nonce для CTR-шифрования */
     int   active;
 } quic_client_t;

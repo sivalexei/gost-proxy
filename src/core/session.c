@@ -177,14 +177,15 @@ int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uin
     pkt->session_id=htonll(session_id);
     /* Вкладываем session_nonce (12 байт) в payload: payload[0]=маркер, payload[1..12]=nonce */
     if(session_nonce) { pkt->payload[0]=1; memcpy(pkt->payload+1,session_nonce,NONCE_SIZE); }
-    /* Auth-tag: CMAC(session_id || server_nonce || session_nonce)
-     * prevent: replay без nonce */
-    uint8_t buf[32];
+    /* Auth-tag: CMAC(session_id || server_nonce || session_nonce || conn_id)
+     * prevent: conn_id/session_id substitution в handshake */
+    uint8_t buf[40];
     memcpy(buf, &session_id, 8);
     memcpy(buf + 8, server_nonce, 8);
     memset(buf + 16, 0, 16);
     if(session_nonce) memcpy(buf + 16, session_nonce, NONCE_SIZE);
-    kuznyechik_cmac_128(buf, 8 + 8 + NONCE_SIZE, ek, pkt->auth_tag);
+    uint32_t cid = ntohl(pkt->conn_id); memcpy(buf + 32, &cid, 4);
+    kuznyechik_cmac_128(buf, 8 + 8 + NONCE_SIZE + 4, ek, pkt->auth_tag);
     return 0;
 }
 static void gen_fake(uint8_t *p, size_t len, uint64_t seed) {
