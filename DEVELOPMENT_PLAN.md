@@ -179,9 +179,9 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 ## Этап 6. Безопасность (P4) — **НОВЫЙ ЭТАП**
 
 ### 6.1. Auth-tag: CMAC с ключом в блоке (2-3 дня) 🔴 **КРИТИЧЕСКОЕ**
-Проблема: `compute_mac()` использует EK только как финальный шифратор, без ключа в CBC-MAC.
-Решение: Реализовать настоящий CMAC-128 (NIST SP 800-38B) на базе Kuznyechik.
-Файлы: session.c, gost_cipher.c, test_protocol.c
+✅ **ИСПРАВЛЕНО**: Реализован настоящий CMAC-128 (NIST SP 800-38B) на базе Kuznyechik.
+`kuznyechik_cmac_128(msg, len, key, mac)` — CBC-MAC chain с под-ключами, LFSR в GF(2^128).
+Файлы: cmac_impl.c, session.c
 
 ### 6.2. CTR nonce: уникальный nonce для каждой сессии (1-2 дня) ✅ **ВЫПОЛНЕНО**
 Проблема: `nonce` сессии = `session_id` (первые 8 байт) + `0x00*8`.
@@ -194,24 +194,25 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Файлы: server.c, session.c, quic_layer.c, quic_layer.h, protocol.h, client.c
 
 ### 6.3. DISCONNECT без аутентификации (1 день) 🔴 **КРИТИЧЕСКОЕ**
-Проблема: Любой, видящий `session_id`, может удалить чужую сессию.
-Решение: Добавить auth-tag к DISCONNECT пакету.
-Файлы: server.c, session.c, test_protocol.c
+✅ **ИСПРАВЛЕНО**: `compute_disconnect_auth(session_id, conn_id, EK, auth_tag)` — CMAC для DISCONNECT.
+Сервер проверяет auth_tag перед удалением сессии.
+Файлы: server.c, session.c
 
 ### 6.4. Session ID от клиента — захват сессии (1-2 дня) 🔴 **КРИТИЧЕСКОЕ**
-Проблема: Клиент выбирает `session_id`, может занять чужой ID.
-Решение: Сервер назначает `session_id` сам (server-generated session ID).
+✅ **ИСПРАВЛЕНО**: Сервер генерирует session_id из getrandom(8) в handshake.
+Клиент получает server-generated SID в handshake-ack.
 Файлы: quic_layer.c, server.c, client.c
 
 ### 6.5. Handshake replay-атака (1 день) 🟠 **ВЫСОКОЕ**
-Проблема: `auth_tag` handshake = `E_K(session_id || 0)`, server_nonce игнорируется.
-Решение: Включить `server_nonce` в auth-tag handshake.
-Файлы: quic_layer.c, server.c
+✅ **ИСПРАВЛЕНО**: `auth_tag = CMAC(session_id || server_nonce || session_nonce || conn_id)`.
+Включён server_nonce, session_nonce, conn_id — защита от replay.
+Файлы: session.c, quic_layer.c
 
 ### 6.6. Race condition: use-after-free (1-2 дня) 🟠 **ВЫСОКОЕ**
-Проблема: `session_remove()` закрывает `tcp_fd`, `tcp_to_udp_thread` пишет в закрытый fd.
-Решение: Добавить `session_lock`/refcount (`pthread_mutex`).
-Файлы: server.c, session.c, gost_common.h
+✅ **ИСПРАВЛЕНО**: `tcp_to_udp_thread` держит `proxy_lock` через `quic_server_send`.
+`session_remove` закрывает tcp_fd под lock. Thread проверяет `conn->tcp_fd < 0` перед каждым write.
+`close(tcp_fd)` тоже под proxy_lock — double-close protection.
+Файлы: server.c
 
 ### 6.7. Padding oracle — различие ответов (1-2 дня) 🟠 **ВЫСОКОЕ**
 Проблема: Разница в ответах при `padding_len > 1024` vs MAC mismatch.
@@ -255,14 +256,13 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 2. CI (.github/workflows): добавить make sanitize-werror, make asan
 3. Документация: обновить README с примерами запуска и настройки
 4. **Начать Этап 6: Безопасность (P4)** — приоритет:
-   - P4-1: CTR nonce уникальность (✅ выполнено)
-   - P4-2: Auth-tag CMAC с ключом (✅ выполнено)
-   - P4-3: DISCONNECT с аутентификацией (🔴 критическое)
-   - P4-3: DISCONNECT с аутентификацией (🔴 критическое)
-   - P4-4: Server-generated session ID (🔴 критическое)
-   - P4-5: Handshake replay protection (🟠 высокое)
-   - P4-6: Race condition fix (🟠 высокое)
-   - P4-7: Padding oracle mitigation (🟠 высокое)
+   - P4-1: CMAC с ключом в блоке ✅
+   - P4-2: CTR nonce уникальность ✅
+   - P4-3: DISCONNECT с аутентификацией ✅
+   - P4-4: Server-generated session ID ✅
+   - P4-5: Handshake replay protection ✅
+   - P4-6: Race condition fix ✅
+   - P4-7: Padding oracle mitigation ✅
    - P4-8: MAC с session_id/conn_id ✅
    - P4-9: conn_id в handshake auth_tag ✅
    - P4-10: CPS на expanded_key ✅
@@ -287,7 +287,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | # | Уязвимость | Код | Описание |
 |---|-----------|-----|----------|
 | 5 | **Handshake replay** | `session.c:protocol_create_handshake` | ✅ **ИСПРАВЛЕНО** — auth_tag = CMAC(session_id || server_nonce || session_nonce), клиент верифицирует перед использованием
-| 6 | **Use-after-free** | `server.c:tcp_to_udp_thread` | `session_remove()` закрывает fd, `tcp_to_udp_thread` пишет в закрытый fd |
+| 6 | **Use-after-free** | `server.c:tcp_to_udp_thread` | ✅ **ИСПРАВЛЕНО** — proxy_lock через send, double-close protection
 | 7 | **Padding oracle** | `session.c:protocol_unpack_data` | ✅ **ИСПРАВЛЕНО** — `printf("DEBUG...")` → `log_debug()`, MAC mismatch без утечки, константное время
 
 ### Средние (3)

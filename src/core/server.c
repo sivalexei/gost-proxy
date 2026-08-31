@@ -352,14 +352,24 @@ static void* tcp_to_udp_thread(void *arg) {
                 if (chunk > MAX_PAYLOAD - 4) chunk = MAX_PAYLOAD - 4;
                 gost_packet_t pkt;
                 if (protocol_pack_data(&pkt, conn->session_id, conn->conn_id, buf + off, chunk, session->expanded_key, session->nonce, &conn->send_counter, 1) == 0) {
-                    /* Отправляем через тот же UDP-сокет сервера (port reuse) */
-                    if (conn->active) quic_server_send(qs_global, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
+                    /* P4-6: keep proxy_lock through send — prevent race with session_remove */
+                    pthread_mutex_lock(&proxy_lock);
+                    int was_active = conn->active;
+                    if (was_active && conn->tcp_fd >= 0) {
+                        quic_server_send(qs_global, &conn->client_addr, conn->addr_len, (const uint8_t*)&pkt, sizeof(gost_packet_t));
+                    }
+                    pthread_mutex_unlock(&proxy_lock);
+                    if (!was_active) break;  /* session removed while locked */
                 }
                 off += chunk;
             }
         } else if (ret < 0 && errno != EINTR) { break; }
     }
-    if (conn->tcp_fd >= 0) close(conn->tcp_fd);
+    if (conn->tcp_fd >= 0) {
+        pthread_mutex_lock(&proxy_lock); /* P4-6: avoid double-close vs session_remove */
+        if (conn->tcp_fd >= 0) { close(conn->tcp_fd); conn->tcp_fd = -1; }
+        pthread_mutex_unlock(&proxy_lock);
+    }
     conn->active = 0; return NULL;
 }
 /* Синхронный connect для CONNECT-запросов (клиент ждёт ответ <=5с) */
