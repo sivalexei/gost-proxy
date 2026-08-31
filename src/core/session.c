@@ -163,12 +163,14 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     log_info("UNPACK OK: dl=%u total=%u padding_len=%u pc=%u",rl,total_len,padding_len,pc); free(deobf); return 0;
 }
 int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uint8_t *ek,
-    const uint8_t *client_nonce, const uint8_t *server_nonce) {
+    const uint8_t *client_nonce, const uint8_t *server_nonce, const uint8_t *session_nonce) {
     if(!pkt||!ek)return -1;
     (void)client_nonce; (void)server_nonce;
     memset(pkt,0,sizeof(gost_packet_t));
     pkt->magic=htonl(GOST_PROXY_MAGIC);pkt->type=PKT_HANDSHAKE;
     pkt->session_id=htonll(session_id);
+    /* Вкладываем session_nonce (12 байт) в payload: payload[0]=маркер, payload[1..12]=nonce */
+    if(session_nonce) { pkt->payload[0]=1; memcpy(pkt->payload+1,session_nonce,NONCE_SIZE); }
     uint8_t sig[16];memset(sig,0,16);memcpy(sig,&session_id,8);
     kuznyechik_encrypt_block(sig,ek);memcpy(pkt->auth_tag,sig,AUTH_TAG_SIZE);
     return 0;

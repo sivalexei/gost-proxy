@@ -69,13 +69,14 @@ int protocol_unpack_data(
 
 /* Формирование handshake с аутентификацией
  * client_nonce и server_nonce — по 8 байт каждый
- */
+ * session_nonce — 12-байтный nonce сессии (вкладывается в payload) */
 int protocol_create_handshake(
     gost_packet_t *pkt,
     uint64_t session_id,          /* host byte order */
     const uint8_t *expanded_key,
     const uint8_t *client_nonce,
-    const uint8_t *server_nonce
+    const uint8_t *server_nonce,
+    const uint8_t *session_nonce
 );
 
 #endif /* PROTOCOL_H */

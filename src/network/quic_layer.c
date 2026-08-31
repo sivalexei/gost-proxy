@@ -148,8 +148,10 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         uint64_t sid_net;
         memcpy(&sid_net, &r->session_id, 8);
         *(uint64_t*)qc->session_id = ntohll(sid_net);
-        log_info("QUIC: handshake OK (sid=%llu, server_nonce=%02x..%02x)",
-                (unsigned long long)ntohll(r->session_id), exp_server_nonce[0], exp_server_nonce[7]);
+        /* Извлекаем session_nonce (12 байт) из payload[1..12] */
+        memcpy(qc->nonce, r->payload + 1, NONCE_SIZE);
+        log_info("QUIC: handshake OK (sid=%llu, nonce=%02x..%02x)",
+                (unsigned long long)ntohll(r->session_id), qc->nonce[0], qc->nonce[11]);
     } else {
         qc->active = 1;
         uint64_t sid_net;

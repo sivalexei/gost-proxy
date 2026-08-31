@@ -279,10 +279,18 @@ static inline gost_session_t* create_session(uint64_t sid) {
         if (!sessions[i].active) {
             atomic_store(&free_slot_next, i + 1);
             sessions[i].active = 1; sessions[i].session_id = sid;
-            sessions[i].counter = 0; memset(sessions[i].nonce, 0, NONCE_SIZE);
+            sessions[i].counter = 0;
+            memset(sessions[i].nonce, 0, NONCE_SIZE);
             sessions[i].last_activity = time(NULL);
-            /* Используем session_id как nonce (96 бит) — синхронизировано с клиентом */
-            memcpy(sessions[i].nonce, &sid, 8);
+            /* Случайный nonce 12 байт (getrandom) — уникальный для каждой сессии */
+            {
+                ssize_t nr = getrandom(sessions[i].nonce, NONCE_SIZE, 0);
+                if (nr < NONCE_SIZE) {
+                    int fd = open("/dev/urandom", O_RDONLY);
+                    if (fd >= 0) { ssize_t r = read(fd, sessions[i].nonce, NONCE_SIZE); (void)r; close(fd); }
+                }
+            }
+            memcpy(sessions[i].expanded_key, expanded_key, 160);
             /* Остальные 8 байт = 0 */
             memcpy(sessions[i].expanded_key, expanded_key, 160);
             session_hash_add(sid, i); return &sessions[i];
@@ -482,10 +490,10 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             session->client_addr = *client_addr;
             session->client_addr_len = addr_len;
 
-            /* Отправляем handshake_ack с server_nonce и auth_tag */
+            /* Отправляем handshake_ack с session_nonce и auth_tag */
             gost_packet_t response;
             protocol_create_handshake(&response, session_id, session->expanded_key,
-                                       client_nonce, server_nonce);
+                                       client_nonce, server_nonce, session->nonce);
             ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
             (void)sent;
             log_info("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(client_addr->sin_addr), (unsigned long long)session_id);

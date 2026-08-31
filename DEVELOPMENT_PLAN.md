@@ -183,10 +183,15 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 Решение: Реализовать настоящий CMAC-128 (NIST SP 800-38B) на базе Kuznyechik.
 Файлы: session.c, gost_cipher.c, test_protocol.c
 
-### 6.2. CTR nonce: уникальный nonce для каждой сессии (1-2 дня) 🔴 **КРИТИЧЕСКОЕ**
+### 6.2. CTR nonce: уникальный nonce для каждой сессии (1-2 дня) ✅ **ВЫПОЛНЕНО**
 Проблема: `nonce` сессии = `session_id` (первые 8 байт) + `0x00*8`.
-Решение: Генерировать nonce из `/dev/urandom` (12 байт), session_id — отдельное поле.
-Файлы: session.c, gost_common.h
+Решение: Генерировать nonce из `/dev/urandom` (12 байт), передача через handshake.
+- `create_session()`: `getrandom(nonce, NONCE_SIZE)` вместо `memcpy(nonce, &sid, 8)`
+- `protocol_create_handshake()`: принимает `session_nonce`, вкладывает в `payload[1..12]`
+- `quic_client_connect()`: извлекает nonce из handshake response → `qc->nonce`
+- `client.c`: `session.nonce = quic_client.nonce` вместо `memcpy(session.nonce, &session_id, 8)`
+- Интеграционные тесты: все прошли ✅
+Файлы: server.c, session.c, quic_layer.c, quic_layer.h, protocol.h, client.c
 
 ### 6.3. DISCONNECT без аутентификации (1 день) 🔴 **КРИТИЧЕСКОЕ**
 Проблема: Любой, видящий `session_id`, может удалить чужую сессию.
@@ -241,7 +246,7 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 | 5.1 | Юнит-тесты протокола | 3/3 выполнено | ✅ |
 | 5.2 | Интеграционный тест | 1/1 выполнено | ✅ |
 | 5.3 | Санитайзеры | 3/3 выполнено | ✅ |
-| 6 | Безопасность (P4) | 0/10 выполнено | 🔴 ~12-18 дн. |
+| 6 | Безопасность (P4) | 1/10 выполнено | 🔴 ~10-16 дн. |
 
 **Суммарно:** ~3-4 дн. до готовности (vs ~4-6 нед. изначально).
 
@@ -266,10 +271,10 @@ Server:  UDP ← Protocol ← Obfuscation ← QUIC ← TCP Proxy → Target
 
 ### Критические (4)
 
-| # | Уязвимость | Код | Описание |
-|---|-----------|-----|----------|
-| 1 | **CTR nonce = session_id** | `session.c:create_session` | `nonce = session_id || 0x00*8` — повторное использование nonce = полная потеря конфиденциальности |
-| 2 | **MAC без ключа в блоке** | `session.c:compute_mac` | EK используется только в финале, не в CBC-MAC. MAC(A) == E(0 XOR A) — вычисляется без ключа |
+| # | Уязвимость | Код | Статус |
+|---|-----------|-----|--------|
+| 1 | **CTR nonce = session_id** | `session.c:create_session` | ✅ **ИСПРАВЛЕНО** — случайный nonce из getrandom(12 байт), передача через handshake |
+| 2 | **MAC без ключа в блоке** | `session.c:compute_mac` | 🔴 EK используется только в финале, не в CBC-MAC. MAC(A) == E(0 XOR A) — вычисляется без ключа |
 | 3 | **DISCONNECT без auth** | `server.c:handle_packet` | `session_id` в открытом заголовке — любой удалит чужую сессию |
 | 4 | **Session ID от клиента** | `server.c:HANDSHAKE` | Клиент выбирает `session_id`, может захватить чужую сессию |
 

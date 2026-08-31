@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include "gost_common.h"
 
 #define QUIC_MAX_PAYLOAD 1350
 #define QUIC_SERVER_ADDR_MAX 64
@@ -26,6 +27,7 @@ typedef struct quic_client {
     char  server_addr[QUIC_SERVER_ADDR_MAX];
     uint16_t server_port;
     uint8_t session_id[8];
+    uint8_t nonce[NONCE_SIZE]; /* 12-байтный nonce для CTR-шифрования */
     int   active;
 } quic_client_t;
 

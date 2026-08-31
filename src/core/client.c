@@ -127,10 +127,8 @@ int main(int argc, char *argv[]) {
     memcpy(&session.session_id, quic_client.session_id, 8);
     session.active = 1;
     session.counter = 0;
-    /* Используем server_nonce из handshake — но его нужно извлечь из quic_client */
-    /* Для простоты: используем session_id как nonce (как на сервере) */
-    memcpy(session.nonce, &session.session_id, 8);
-    memset(session.nonce + 8, 0, 8);
+    /* Session nonce получен из handshake (12 байт от сервера) — уникален для каждой сессии */
+    memcpy(session.nonce, quic_client.nonce, NONCE_SIZE);
     memcpy(session.expanded_key, expanded_key, 160);
     log_info("QUIC session_id=%llu", (unsigned long long)session.session_id);
 
