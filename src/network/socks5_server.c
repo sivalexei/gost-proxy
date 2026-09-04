@@ -49,7 +49,7 @@ static int s5_send_connect_error(int fd, uint8_t rep_code) {
     return s5_send_all(fd, buf, 10);
 }
 
-static int s5_parse_addr(const uint8_t *data, size_t len, char *addr, uint16_t *port) {
+static int s5_parse_addr(const uint8_t *data, int len, char *addr, uint16_t *port) {
     if (len < 4) return -1;
     uint8_t atype = data[3];
     switch (atype) {

@@ -88,13 +88,13 @@ $(BUILD_DIR)/gost-test: $(CRYPTO_OBJ) $(BUILD_DIR)/gost_test.o | $(BUILD_DIR)
 $(BUILD_DIR)/gost_test.o: $(SRC_DIR)/crypto/gost_test.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/test_protocol: $(CRYPTO_OBJ) $(BUILD_DIR)/test_protocol.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o | $(BUILD_DIR)
+$(BUILD_DIR)/test_protocol: $(CRYPTO_OBJ) $(CMAC_OBJ) $(BUILD_DIR)/test_protocol.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o | $(BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_protocol.o: $(SRC_DIR)/core/test_protocol.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/test_pack_roundtrip: $(BUILD_DIR)/test_pack_roundtrip.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o $(BUILD_DIR)/gost_cipher.o | $(BUILD_DIR)
+$(BUILD_DIR)/test_pack_roundtrip: $(BUILD_DIR)/test_pack_roundtrip.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o $(BUILD_DIR)/gost_cipher.o $(CMAC_OBJ) | $(BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_pack_roundtrip.o: test_pack_roundtrip.c | $(BUILD_DIR)

@@ -94,7 +94,7 @@ void config_defaults(gost_config_t *cfg) {
     /* Поддержка env-переменной GOST_PROXY_KEY */
     const char *env_key = getenv("GOST_PROXY_KEY");
     if (env_key && env_key[0]) {
-        strncpy(cfg->key, env_key, sizeof(cfg->key) - 1);
+        memcpy(cfg->key, env_key, strnlen(env_key, sizeof(cfg->key) - 1));
         cfg->key[sizeof(cfg->key) - 1] = '\0';
     }
 }
@@ -133,7 +133,7 @@ int config_load(gost_config_t *cfg, const char *path) {
     int ival;
 
     if (json_get_string(json, "server_ip", tmp, sizeof(tmp)) == 0) {
-        strncpy(cfg->server_ip, tmp, sizeof(cfg->server_ip) - 1);
+        memcpy(cfg->server_ip, tmp, strnlen(tmp, sizeof(cfg->server_ip) - 1));
     printf("[DEBUG] json_get_string server_ip OK, value=%s port=%d\n", cfg->server_ip, cfg->server_port);
         cfg->server_ip[sizeof(cfg->server_ip) - 1] = '\0';
     }
@@ -142,7 +142,7 @@ int config_load(gost_config_t *cfg, const char *path) {
         cfg->server_port = (uint16_t)ival;
 
     if (json_get_string(json, "bind", tmp, sizeof(tmp)) == 0) {
-        strncpy(cfg->bind_addr, tmp, sizeof(cfg->bind_addr) - 1);
+        memcpy(cfg->bind_addr, tmp, strnlen(tmp, sizeof(cfg->bind_addr) - 1));
         cfg->bind_addr[sizeof(cfg->bind_addr) - 1] = '\0';
     }
 
@@ -175,19 +175,19 @@ int config_load(gost_config_t *cfg, const char *path) {
 
     if (json_get_string(json, "key", tmp, sizeof(tmp)) == 0) {
         fprintf(stderr, "[CONFIG] JSON key found: %s\n", tmp);
-        strncpy(cfg->key, tmp, sizeof(cfg->key) - 1);
+        memcpy(cfg->key, tmp, strnlen(tmp, sizeof(cfg->key) - 1));
         cfg->key[sizeof(cfg->key) - 1] = '\0';
     } else {
         fprintf(stderr, "[CONFIG] JSON key NOT found!\n");
     }
 
     if (json_get_string(json, "log_level", tmp, sizeof(tmp)) == 0) {
-        strncpy(cfg->log_level, tmp, sizeof(cfg->log_level) - 1);
+        memcpy(cfg->log_level, tmp, strnlen(tmp, sizeof(cfg->log_level) - 1));
         cfg->log_level[sizeof(cfg->log_level) - 1] = '\0';
     }
 
     if (json_get_string(json, "log_file", tmp, sizeof(tmp)) == 0) {
-        strncpy(cfg->log_file, tmp, sizeof(cfg->log_file) - 1);
+        memcpy(cfg->log_file, tmp, strnlen(tmp, sizeof(cfg->log_file) - 1));
         cfg->log_file[sizeof(cfg->log_file) - 1] = '\0';
     }
 
