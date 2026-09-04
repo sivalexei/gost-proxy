@@ -61,7 +61,7 @@ uint32_t protocol_insert_padding(uint8_t *p, uint32_t *dl, uint32_t padding_len,
     return padding_len;
 }
 static void compute_mac(const uint8_t *pay, size_t plen, const uint8_t *ek, uint8_t *mac) {
-    kuznyechik_cmac_128(pay, plen, ek, mac);
+    kuznyechik_cmac_128(pay, plen, ek, mac, encrypt_block_c);
 }
 
 /* Auth-tag для DISCONNECT: HMAC(session_id, conn_id) с EK
@@ -73,7 +73,7 @@ void compute_disconnect_auth(uint64_t session_id, uint32_t conn_id,
     memcpy(buf, &session_id, 8);
     memcpy(buf + 8, &conn_id, 4);
     memset(buf + 12, 0, 4);  /* padding to 16 bytes */
-    kuznyechik_cmac_128(buf, 16, ek, auth);
+    kuznyechik_cmac_128(buf, 16, ek, auth, encrypt_block_c);
 }
 
 static void make_ctr_nonce(const uint8_t *sn, uint32_t c, uint8_t *o16) {
@@ -175,8 +175,12 @@ int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uin
     memset(pkt,0,sizeof(gost_packet_t));
     pkt->magic=htonl(GOST_PROXY_MAGIC);pkt->type=PKT_HANDSHAKE;
     pkt->session_id=htonll(session_id);
-    /* Вкладываем session_nonce (12 байт) в payload: payload[0]=маркер, payload[1..12]=nonce */
-    if(session_nonce) { pkt->payload[0]=1; memcpy(pkt->payload+1,session_nonce,NONCE_SIZE); }
+    /* payload: [0]=маркер, [1..8]=server_nonce, [9..20]=session_nonce */
+    if(session_nonce && server_nonce) {
+        pkt->payload[0] = 1;
+        memcpy(pkt->payload + 1, server_nonce, 8);
+        memcpy(pkt->payload + 9, session_nonce, NONCE_SIZE);
+    }
     /* Auth-tag: CMAC(session_id || server_nonce || session_nonce || conn_id)
      * prevent: conn_id/session_id substitution в handshake */
     uint8_t buf[40];
@@ -185,7 +189,14 @@ int protocol_create_handshake(gost_packet_t *pkt, uint64_t session_id, const uin
     memset(buf + 16, 0, 16);
     if(session_nonce) memcpy(buf + 16, session_nonce, NONCE_SIZE);
     uint32_t cid = ntohl(pkt->conn_id); memcpy(buf + 32, &cid, 4);
-    kuznyechik_cmac_128(buf, 8 + 8 + NONCE_SIZE + 4, ek, pkt->auth_tag);
+    log_info("HANDSHAKE CMAC: sid=%llu cid=%u nonce_s=%02x%02x%02x%02x%02x%02x%02x%02x nonce_sn=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+        (unsigned long long)session_id, cid,
+        server_nonce[0],server_nonce[1],server_nonce[2],server_nonce[3],
+        server_nonce[4],server_nonce[5],server_nonce[6],server_nonce[7],
+        session_nonce[0],session_nonce[1],session_nonce[2],session_nonce[3],
+        session_nonce[4],session_nonce[5],session_nonce[6],session_nonce[7],
+        session_nonce[8],session_nonce[9],session_nonce[10],session_nonce[11]);
+    kuznyechik_cmac_128(buf, 8 + 8 + NONCE_SIZE + 4, ek, pkt->auth_tag, encrypt_block_c);
     return 0;
 }
 static void gen_fake(uint8_t *p, size_t len, uint64_t seed) {
@@ -246,6 +257,6 @@ int protocol_compute_cps_answer(uint64_t session_id, const uint8_t *expanded_key
     uint8_t buf[32];
     memcpy(buf, &session_id, 8);
     memset(buf + 8, 0, 24);
-    kuznyechik_cmac_128(buf, 32, expanded_key, answer);
+    kuznyechik_cmac_128(buf, 32, expanded_key, answer, encrypt_block_c);
     return 0;
 }

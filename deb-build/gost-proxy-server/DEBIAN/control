@@ -1,0 +1,11 @@
+Package: gost-proxy-server
+Version: 2.0.0-1
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: Developer <dev@example.com>
+Depends: 
+Description: ГОСТ Прокси-Сервер v2.0
+ Прокси-сервер с шифрованием ГОСТ Р 34.12-2015 Кузнечик.
+ QUIC-транспорт, CPS-аутентификация, 256 сессий.
+ Порт по умолчанию: 10443

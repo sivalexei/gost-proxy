@@ -6,12 +6,18 @@ export DH_VERBOSE=1
 	dh $@
 
 override_dh_auto_build:
-	nasm -f elf64 src/crypto/kuznyechik.asm -o build/kuznyechik.o
-	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -c src/core/session.c -o build/session.o
-	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -c src/core/server.c -o build/server.o
-	gcc build/kuznyechik.o build/server.o build/session.o -o build/gost-server -lpthread
-	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -c src/core/client.c -o build/client.o
-	gcc build/kuznyechik.o build/client.o build/session.o -o build/gost-client -lpthread
+	@make build
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/server.c -o build/server.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/client.c -o build/client.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/session.c -o build/session.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/config.c -o build/config.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/log.c -o build/log.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/network/socks5.c -o build/socks5.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/obfuscation.c -o build/obfuscation.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/network/quic_layer.c -o build/quic_layer.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/dns_cache.c -o build/dns_cache.o
+	gcc build/gost_cipher.o build/cmac_impl.o build/server.o build/session.o build/config.o build/log.o build/tcp_helpers.o build/quic_layer.o build/obfuscation.o build/dns_cache.o -o build/gost-server -lpthread
+	gcc build/gost_cipher.o build/cmac_impl.o build/client.o build/session.o build/config.o build/log.o build/socks5.o build/quic_layer.o build/obfuscation.o build/dns_cache.o -o build/gost-client -lpthread
 
 override_dh_auto_install:
 	mkdir -p debian/gost-proxy-server/usr/bin
@@ -22,7 +28,6 @@ override_dh_auto_install:
 	install -m 0755 build/gost-server debian/gost-proxy-server/usr/bin/gost-server
 	install -m 0644 config/server.conf debian/gost-proxy-server/etc/gost-proxy/server.conf
 
-	# Systemd unit
 	echo '[Unit]' > debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
 	echo 'Description=ГОСТ Прокси-Сервер' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
 	echo 'After=network.target' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
@@ -38,6 +43,18 @@ override_dh_auto_install:
 	echo 'WantedBy=multi-user.target' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
 
 	install -m 0755 build/gost-client debian/gost-proxy-client/usr/bin/gost-client
+	echo '[Unit]' > debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'Description=ГОСТ Прокси-Клиент' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'After=network.target' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '[Service]' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'Type=simple' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'ExecStart=/usr/bin/gost-client' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'Restart=on-failure' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'RestartSec=5' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '[Install]' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'WantedBy=multi-user.target' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
 
 override_dh_auto_clean:
 	rm -rf build

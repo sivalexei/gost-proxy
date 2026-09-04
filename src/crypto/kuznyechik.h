@@ -18,6 +18,7 @@ void kuznyechik_set_key(const uint8_t *key, uint8_t *expanded_key);
 
 /* Шифрование одного блока (16 байт) */
 void kuznyechik_encrypt_block(uint8_t *block, const uint8_t *expanded_key);
+void encrypt_block_c(uint8_t *block, const uint8_t *expanded);
 
 /* Расшифрование одного блока (16 байт) */
 void kuznyechik_decrypt_block(uint8_t *block, const uint8_t *expanded_key);
@@ -45,9 +46,12 @@ void kuznyechik_compute_auth(const uint8_t *expanded_key,
                               const uint8_t *server_nonce,
                               uint8_t *auth_out);
 
+/* Тип функции шифрования для CMAC */
+typedef void (*encrypt_fn)(uint8_t *, const uint8_t *);
+
 /* CMAC-128: NIST SP 800-38B §2.4 на базе Kuznyechik
- * msg: данные, msg_len: длина, ek: expanded key, out: 16-байт MAC */
+ * msg: данные, msg_len: длина, ek: expanded key, out: 16-байт MAC, encrypt: функция шифрования */
 void kuznyechik_cmac_128(const uint8_t *msg, size_t msg_len,
-                          const uint8_t *ek, uint8_t *out);
+                          const uint8_t *ek, uint8_t *out, encrypt_fn encrypt);
 
 #endif /* KUZNYECHIK_H */

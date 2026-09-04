@@ -157,7 +157,7 @@ static void key_schedule(const uint8_t *key, uint8_t *expanded) {
 }
 
 /* ===== Block encryption (RFC 7801 §4.5.1) ===== */
-static void encrypt_block_c(uint8_t *block, const uint8_t *expanded) {
+void encrypt_block_c(uint8_t *block, const uint8_t *expanded) {
     for (int i = 0; i < 9; i++) {
         for (int j = 0; j < 16; j++)
             block[j] ^= expanded[i * 16 + j];

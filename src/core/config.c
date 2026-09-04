@@ -83,7 +83,7 @@ void config_defaults(gost_config_t *cfg) {
     strcpy(cfg->bind_addr, "0.0.0.0");
     cfg->port = 10443;
     cfg->max_sessions = 256;
-    cfg->max_sessions_per_ip = 10;  /* P4-12: default 10 sessions per IP */
+    cfg->max_sessions_per_ip = 1000;  /* P4-12: default 10 sessions per IP */
     cfg->session_timeout = 300;
     cfg->rate_limit = 10.0;      /* 10 пакетов в секунду */
     cfg->rate_burst = 20;       /* burst до 20 пакетов */
@@ -134,6 +134,7 @@ int config_load(gost_config_t *cfg, const char *path) {
 
     if (json_get_string(json, "server_ip", tmp, sizeof(tmp)) == 0) {
         strncpy(cfg->server_ip, tmp, sizeof(cfg->server_ip) - 1);
+    printf("[DEBUG] json_get_string server_ip OK, value=%s port=%d\n", cfg->server_ip, cfg->server_port);
         cfg->server_ip[sizeof(cfg->server_ip) - 1] = '\0';
     }
 
@@ -168,6 +169,9 @@ int config_load(gost_config_t *cfg, const char *path) {
 
     if (json_get_int(json, "handshake_max_retries", &ival) == 0)
         cfg->handshake_max_retries = ival;
+
+    if (json_get_int(json, "socks5_port", &ival) == 0)
+        cfg->socks5_port = (uint16_t)ival;
 
     if (json_get_string(json, "key", tmp, sizeof(tmp)) == 0) {
         fprintf(stderr, "[CONFIG] JSON key found: %s\n", tmp);

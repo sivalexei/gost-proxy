@@ -1,0 +1,13 @@
+[Unit]
+Description=ГОСТ Прокси-Сервер
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gost-server
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

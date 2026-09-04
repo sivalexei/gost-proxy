@@ -54,6 +54,7 @@ int main(int argc, char *argv[]) {
         printf("[CONFIG] Файл не найден, используются значения по умолчанию\n");
 
     printf("[DEBUG] cfg.key='%s' (len=%zu)\n", cfg.key, strlen(cfg.key));
+    printf("[DEBUG] cfg.server_ip=%s port=%d\n", cfg.server_ip, cfg.server_port);
 
     /* Лог по умолчанию в /tmp/gost-proxy/client.log */
     if (cfg.log_file[0] == '\0' || strcmp(cfg.log_file, "/var/log/gost-proxy/client.log") == 0) {

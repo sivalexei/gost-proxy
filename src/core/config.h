@@ -16,6 +16,7 @@ typedef struct {
     int      handshake_timeout_ms;  /* timeout handshake в мс */
     int      handshake_max_retries; /* макс. попыток handshake */
     char     key[128];  /* hex-key: 64 символа = 32 байт + запас */
+    uint16_t socks5_port;  /* порт SOCKS5-сервера (0 = отключён) */
     char     log_level[16];
     char     log_file[256];
 } gost_config_t;

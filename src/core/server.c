@@ -25,6 +25,7 @@
 #include "config.h"
 #include "dns_cache.h"
 #include "log.h"
+#include "socks5_server.h"
 #include <ctype.h>
 
 /* Поддержка IPv4 и IPv6 */
@@ -781,6 +782,13 @@ int main(int argc, char *argv[]) {
     /* Запускаем UDP-сервер */
     pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs_obj);
 
+    /* Запускаем SOCKS5-сервер */
+    if (cfg.socks5_port > 0) {
+        if (socks5_server_start(cfg.socks5_port, cfg.key) != 0)
+            log_warn("SOCKS5: failed to start");
+    }
+        log_warn("SOCKS5: failed to start");
+
     while (running) { struct timeval tv = { .tv_usec = 100000 }; select(0, NULL, NULL, NULL, &tv); }
     log_info("Server shutting down...");
     log_info("Server: waiting for server_thread to exit...");
@@ -831,6 +839,8 @@ int main(int argc, char *argv[]) {
     }
     pthread_join(thread, NULL);
     log_info("Server: UDP thread joined");
+    /* Останавливаем SOCKS5-сервер */
+    socks5_server_stop();
     /* Отключаем все сессии */
     for (int i = 0; i < max_sessions; i++) sessions[i].active = 0;
     free(sessions); log_close(); return 0;

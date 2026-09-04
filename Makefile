@@ -1,6 +1,6 @@
 CC = gcc
 NASM = nasm
-CFLAGS = -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network
+CFLAGS = -Wall -Wextra -O0 -g -I src/crypto -I src/core -I src/network
 LDFLAGS = -lpthread
 NASMFLAGS = -f elf64
 
@@ -18,11 +18,12 @@ CMAC_OBJ = $(BUILD_DIR)/cmac_impl.o
 CONFIG_OBJ = $(BUILD_DIR)/config.o
 LOG_OBJ = $(BUILD_DIR)/log.o
 SOCKS5_OBJ = $(BUILD_DIR)/socks5.o
+SOCKS5_SERVER_OBJ = $(BUILD_DIR)/socks5_server.o
 QUIC_LAYER_OBJ = $(BUILD_DIR)/quic_layer.o
 OBFUSCATION_OBJ = $(BUILD_DIR)/obfuscation.o
 TCP_HELPERS_OBJ = $(BUILD_DIR)/tcp_helpers.o
 DNS_CACHE_OBJ = $(BUILD_DIR)/dns_cache.o
-SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ)
+SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(SOCKS5_SERVER_OBJ)
 CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ)
 PROXY_OBJ = $(BUILD_DIR)/proxy.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ)
 
@@ -55,6 +56,9 @@ $(BUILD_DIR)/log.o: $(SRC_DIR)/core/log.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/socks5.o: $(SRC_DIR)/network/socks5.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/socks5_server.o: $(SRC_DIR)/network/socks5_server.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/obfuscation.o: $(SRC_DIR)/core/obfuscation.c | $(BUILD_DIR)
