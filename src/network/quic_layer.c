@@ -9,11 +9,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/epoll.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/random.h>
+#include <sys/time.h>
 #include "quic_layer.h"
 #include "protocol.h"
 #include "gost_common.h"
@@ -22,6 +24,11 @@
 static int create_udp_socket(void) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return -1;
+    /* Ensure fd > 2 (not stdin/stdout/stderr) */
+    if (fd < 3) {
+        int dup_fd = dup(fd);
+        if (dup_fd >= 0) { close(fd); fd = dup_fd; }
+    }
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     int buf = 1024*1024;
@@ -87,31 +94,52 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         inet_pton(AF_INET, server_addr, &s4->sin_addr);
     }
 
-    ssize_t sent = sendto(qc->server_fd, &hs_pkt, sizeof(hs_pkt), 0,
-                          (struct sockaddr*)&srv, srv_len);
-    if (sent < (ssize_t)sizeof(hs_pkt)) {
-        log_error("QUIC: handshake send failed");
+    /* Bind to any port */
+    struct sockaddr_in bind_addr;
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    bind_addr.sin_port = 0;
+    bind(qc->server_fd, (struct sockaddr*)&bind_addr, sizeof(bind_addr));
+
+    /* Connect UDP socket to server — enables send()/recv() */
+    if (connect(qc->server_fd, (struct sockaddr*)&srv, srv_len) < 0) {
+        log_error("QUIC: connect failed: %s", strerror(errno));
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
 
-    int epfd = epoll_create1(0);
-    if (epfd < 0) { close(qc->server_fd); qc->server_fd = -1; return -1; }
-    struct epoll_event ev = { .events = EPOLLIN };
-    ev.data.fd = qc->server_fd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, qc->server_fd, &ev);
-    struct epoll_event events;
-    if (epoll_wait(epfd, &events, 1, 5000) <= 0) {
-        log_error("QUIC: handshake timeout");
-        close(epfd); close(qc->server_fd); qc->server_fd = -1; return -1;
-    }
-    close(epfd);
+    /* Set non-blocking for polling */
+    int flags = fcntl(qc->server_fd, F_GETFL, 0);
+    fcntl(qc->server_fd, F_SETFL, flags | O_NONBLOCK);
 
+    /* Send handshake */
+    ssize_t sent = send(qc->server_fd, &hs_pkt, sizeof(hs_pkt), 0);
+    if (sent < (ssize_t)sizeof(hs_pkt)) {
+        log_error("QUIC: handshake send failed: %s", strerror(errno));
+        close(qc->server_fd); qc->server_fd = -1; return -1;
+    }
+
+    /* Poll for response */
     uint8_t resp[MAX_PAYLOAD + 32 + 1];
-    socklen_t rlen = sizeof(srv);
-    ssize_t n = recvfrom(qc->server_fd, resp, sizeof(resp), 0,
-                         (struct sockaddr*)&srv, &rlen);
+    int retries = 3;
+    ssize_t n;
+    do {
+        struct pollfd pfd = { .fd = qc->server_fd, .events = POLLIN };
+        int pr = poll(&pfd, 1, 5000);
+        if (pr <= 0) {
+            log_info("QUIC: handshake recv timeout, retrying (%d left)", retries--);
+            if (retries <= 0) { log_error("QUIC: handshake timeout after retries"); close(qc->server_fd); qc->server_fd = -1; return -1; }
+            /* Resend handshake */
+            send(qc->server_fd, &hs_pkt, sizeof(hs_pkt), 0);
+            continue;
+        }
+        n = recv(qc->server_fd, resp, sizeof(resp), 0);
+        if (n > 0) break;
+        log_error("QUIC: recv error: %s", strerror(errno));
+        close(qc->server_fd); qc->server_fd = -1; return -1;
+    } while (1);
     if (n < (ssize_t)(4 + 1 + 4 + 8)) {
-        log_error("QUIC: handshake response short");
+        log_error("QUIC: handshake response short (n=%zd, expected>=%d)", n, (int)(4 + 1 + 4 + 8));
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
 
@@ -128,33 +156,35 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         /* Извлекаем server_nonce и session_nonce из ответа */
         memcpy(exp_server_nonce, r->payload + 1, 8);
         memcpy(exp_session_nonce, r->payload + 9, NONCE_SIZE);
-        /* Вычисляем CMAC(session_id || server_nonce || session_nonce || conn_id) */
-        uint64_t sid_net;
-        memcpy(&sid_net, &r->session_id, 8);
+        /* Вычисляем CMAC(session_id || server_nonce || session_nonce || conn_id)
+         * r->session_id — в net-order (от сервера). Для CMAC нужен host-order.
+         * Сервер в handshake_generate_ack передаёт host-order session_id в CMAC.
+         * Значит, клиент должен тоже: прочитать net-order из пакета, сделать ntohll.
+         */
+        uint64_t sid_host = ntohll(*(uint64_t*)&r->session_id);
         uint8_t verify_buf[40];
-        memcpy(verify_buf, &sid_net, 8);
+        memcpy(verify_buf, &sid_host, 8);
         memcpy(verify_buf + 8, exp_server_nonce, 8);
         memcpy(verify_buf + 16, exp_session_nonce, NONCE_SIZE);
         /* conn_id — тот же, что клиент отправил в handshake */
         uint32_t client_cid = htonl(qc->conn_id);
         memcpy(verify_buf + 16 + NONCE_SIZE, &client_cid, 4);
-        kuznyechik_cmac_128(verify_buf, 8 + 8 + NONCE_SIZE + 4, expanded_key, exp_auth);
+        kuznyechik_cmac_128(verify_buf, 8 + 8 + NONCE_SIZE + 4, expanded_key, exp_auth, encrypt_block_c);
         /* Сравниваем auth_tag */
         if (memcmp(r->auth_tag, exp_auth, AUTH_TAG_SIZE) != 0) {
             log_error("QUIC: server auth failed (CMAC mismatch)");
             close(qc->server_fd); qc->server_fd = -1; return -1;
         }
         qc->active = 1;
-        *(uint64_t*)qc->session_id = ntohll(sid_net);
+        memcpy(qc->session_id, &sid_host, 8);
         memcpy(qc->nonce, exp_session_nonce, NONCE_SIZE);
         log_info("QUIC: handshake OK (sid=%llu, nonce=%02x..%02x)",
                 (unsigned long long)ntohll(r->session_id), qc->nonce[0], qc->nonce[11]);
     } else {
         qc->active = 1;
-        uint64_t sid_net;
-        memcpy(&sid_net, &r->session_id, 8);
-        *(uint64_t*)qc->session_id = ntohll(sid_net);
-        log_info("QUIC: handshake OK (sid=%llu, no auth)", (unsigned long long)ntohll(r->session_id));
+        uint64_t sid_host = ntohll(*(uint64_t*)&r->session_id);
+        memcpy(qc->session_id, &sid_host, 8);
+        log_info("QUIC: handshake OK (sid=%llu, no auth)", (unsigned long long)sid_host);
     }
     return 0;
 }
@@ -256,23 +286,30 @@ ssize_t quic_server_recv(quic_server_t *qs, uint8_t *buf, size_t max_len,
     struct epoll_event ev = { .events = EPOLLIN };
     ev.data.fd = qs->server_fd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, qs->server_fd, &ev);
-    struct epoll_event events;
     ssize_t n = 0;
-    int remaining = timeout_ms;
-    int total_waited = 0;
-    while (remaining > 0) {
-        int chunk = remaining;
-        int ret = epoll_wait(epfd, &events, 1, chunk);
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    long total_ms = 0;
+    while (total_ms < timeout_ms) {
+        int chunk = timeout_ms - total_ms;
+        struct epoll_event ev2;
+        memset(&ev2, 0, sizeof(ev2));
+        int ret = epoll_wait(epfd, &ev2, 1, chunk);
         if (!qs->active) { log_debug("QUIC: shutdown detected, active=%d", qs->active); close(epfd); return QUIC_ERROR; }  /* shutdown */
         if (ret < 0) { close(epfd); return QUIC_ERROR; }
-        if (ret == 0) { total_waited += chunk; remaining = timeout_ms - total_waited; if (remaining < 0) remaining = 0; continue; }
-        if (!(events.events & EPOLLIN)) { total_waited += chunk; remaining = timeout_ms - total_waited; if (remaining < 0) remaining = 0; continue; }
-        close(epfd);
-        *addr_len = sizeof(struct sockaddr_in);
-        n = recvfrom(qs->server_fd, buf, max_len, 0,
-                     (struct sockaddr*)client_addr, addr_len);
-        if (n <= 0) { if (n == 0) return QUIC_CLOSED; if (errno==EAGAIN) return 0; return QUIC_ERROR; }
-        return n;
+        if (ret == 0) { /* timeout on this chunk */ }
+        else if (ev2.events & EPOLLIN) {
+            close(epfd);
+            *addr_len = sizeof(struct sockaddr_in);
+            n = recvfrom(qs->server_fd, buf, max_len, 0,
+                         (struct sockaddr*)client_addr, addr_len);
+            if (n <= 0) { if (n == 0) return QUIC_CLOSED; if (errno==EAGAIN) return 0; return QUIC_ERROR; }
+            return n;
+        }
+        /* Update elapsed time */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        total_ms = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1e6;
     }
     close(epfd);
     return 0;  /* timeout */

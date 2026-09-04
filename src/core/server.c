@@ -545,7 +545,7 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             protocol_create_handshake(&response, session_id, session->expanded_key,
                                        client_nonce, server_nonce, session->nonce);
             ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
-            (void)sent;
+            log_info("HANDSHAKE SENT: %zd bytes to %s", sent, inet_ntoa(client_addr->sin_addr));
             log_info("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(client_addr->sin_addr), (unsigned long long)session_id);
             break;
         }
@@ -563,7 +563,18 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
         case PKT_KEEPALIVE: {
             uint64_t ka_sid = ntohll(pkt->session_id);
             gost_session_t *ka_ssn = find_session(ka_sid);
-            if (ka_ssn) ka_ssn->last_activity = time(NULL);
+            if (ka_ssn) {
+                ka_ssn->last_activity = time(NULL);
+                gost_packet_t ka_resp;
+                memset(&ka_resp, 0, sizeof(ka_resp));
+                ka_resp.magic = htonl(GOST_PROXY_MAGIC);
+                ka_resp.type = PKT_KEEPALIVE;
+                ka_resp.session_id = pkt->session_id;
+                quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ka_resp, sizeof(ka_resp));
+                log_debug("KEEPALIVE OK: sid=%llu", (unsigned long long)ka_sid);
+            } else {
+                log_warn("KEEPALIVE: session not found for sid=%llu", (unsigned long long)ka_sid);
+            }
             expire_sessions();
             break;
         }
@@ -664,7 +675,8 @@ static void* server_thread(void *arg) {
     while (qs->active && running) {
         addr_len = sizeof(client_addr);
         ssize_t recv_len = quic_server_recv(qs, buffer, BUFFER_SIZE, &client_addr, &addr_len, 100);
-        log_info("Server: recv returned %zd, active=%d, running=%d", recv_len, qs->active, running);
+        if (recv_len != 0) /* skip timeout 0 logs */
+            log_info("Server: recv returned %zd, active=%d, running=%d", recv_len, qs->active, running);
         if (recv_len > 0) {
             handle_packet(qs, &client_addr, addr_len, buffer, recv_len);
         } else if (recv_len == QUIC_ERROR) {
@@ -729,7 +741,7 @@ int main(int argc, char *argv[]) {
         unsigned int byte; sscanf(&cfg.key[i*2], "%2x", &byte); server_key[i] = (uint8_t)byte;
     }
     kuznyechik_set_key(server_key, expanded_key);
-    log_debug("Server expanded_key: %02x%02x%02x%02x...%02x%02x", expanded_key[0],expanded_key[1],expanded_key[2],expanded_key[3], expanded_key[155],expanded_key[159]);
+    printf("[DEBUG] server expanded_key: %02x%02x%02x%02x...%02x%02x\n", expanded_key[0],expanded_key[1],expanded_key[2],expanded_key[3], expanded_key[155],expanded_key[159]);
 
     /* Инициализация сессий с хеш-таблицей и цепочками */
     max_sessions = cfg.max_sessions;
