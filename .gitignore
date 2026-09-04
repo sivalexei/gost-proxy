@@ -20,3 +20,4 @@ rpmbuild/SRPMS/
 *.log
 gost-proxy-*.log
 test_*
+server.log*
