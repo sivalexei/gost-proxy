@@ -155,12 +155,17 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     if(*ctr!=0&&pc<=*ctr){log_info("protocol_unpack_data: COUNTER FAIL pc=%u ctr=%u",pc,*ctr); free(deobf); return -1;}
     uint32_t data_len=((uint32_t)deobf[4]<<24)|((uint32_t)deobf[5]<<16)|((uint32_t)deobf[6]<<8)|(uint32_t)deobf[7];
     uint32_t padding_len=((uint32_t)deobf[8]<<24)|((uint32_t)deobf[9]<<16)|((uint32_t)deobf[10]<<8)|(uint32_t)deobf[11];
-    if(data_len==0||padding_len>1024){log_debug("UNPACK: len fail"); free(deobf); return -1;}
+    if(padding_len>1024){log_debug("UNPACK: len fail"); free(deobf); return -1;}
     uint32_t total_len=12+padding_len+data_len;
     if(total_len>MAX_PAYLOAD){log_debug("UNPACK: total_len fail"); free(deobf); return -1;}
     /* MAC проверяем ДО расшифровки */
     uint8_t emac[AUTH_TAG_SIZE];
-    compute_mac(deobf, total_len, ek, emac);
+    uint8_t auth_buf[16+12+MAX_PAYLOAD];
+    auth_buf[0]=0x00;auth_buf[1]=0x00;auth_buf[2]=0x00;auth_buf[3]=0x02;  /* type=DATA LE */
+    uint64_t sid_net=htonll(ntohll(pkt->session_id)); memcpy(auth_buf+4,&sid_net,8);
+    uint32_t cid_net=htonl(ntohl(pkt->conn_id)); memcpy(auth_buf+12,&cid_net,4);
+    memcpy(auth_buf+16,deobf,total_len);
+    compute_mac(auth_buf,16+total_len,ek,emac);
     if(memcmp(pkt->auth_tag,emac,AUTH_TAG_SIZE)!=0){log_debug("UNPACK: MAC mismatch"); free(deobf); return -1;}
     /* Расшифровываем данные */
     uint8_t cn2[16]; make_ctr_nonce(nonce,pc,cn2);
@@ -260,3 +265,10 @@ int protocol_compute_cps_answer(uint64_t session_id, const uint8_t *expanded_key
     kuznyechik_cmac_128(buf, 32, expanded_key, answer, encrypt_block_c);
     return 0;
 }
+
+// DEBUG TEST
+#ifdef DEBUG_TEST
+int protocol_pack_data_debug(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id,
+    const uint8_t *data, size_t data_len, const uint8_t *ek, const uint8_t *nonce,
+    uint32_t *counter, uint8_t obf_dir);
+#endif
