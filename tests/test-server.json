@@ -1,0 +1,11 @@
+{
+    "bind": "127.0.0.1",
+    "port": 11443,
+    "max_sessions": 64,
+    "session_timeout": 60,
+    "rate_limit": 1000,
+    "rate_burst": 2000,
+    "key": "0000000000000000000000000000000000000000000000000000000000000000",
+    "log_level": "info",
+    "log_file": "/tmp/gost-proxy-server-ci.log"
+}

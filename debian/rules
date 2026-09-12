@@ -1,0 +1,60 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE=1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	@make build
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/server.c -o build/server.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/client.c -o build/client.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/session.c -o build/session.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/config.c -o build/config.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/log.c -o build/log.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/network/socks5.c -o build/socks5.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/obfuscation.c -o build/obfuscation.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/network/quic_layer.c -o build/quic_layer.o
+	gcc -Wall -Wextra -O2 -I src/crypto -I src/core -I src/network -c src/core/dns_cache.c -o build/dns_cache.o
+	gcc build/gost_cipher.o build/cmac_impl.o build/server.o build/session.o build/config.o build/log.o build/tcp_helpers.o build/quic_layer.o build/obfuscation.o build/dns_cache.o -o build/gost-server -lpthread
+	gcc build/gost_cipher.o build/cmac_impl.o build/client.o build/session.o build/config.o build/log.o build/socks5.o build/quic_layer.o build/obfuscation.o build/dns_cache.o -o build/gost-client -lpthread
+
+override_dh_auto_install:
+	mkdir -p debian/gost-proxy-server/usr/bin
+	mkdir -p debian/gost-proxy-server/etc/gost-proxy
+	mkdir -p debian/gost-proxy-server/usr/lib/systemd/system
+	mkdir -p debian/gost-proxy-client/usr/bin
+
+	install -m 0755 build/gost-server debian/gost-proxy-server/usr/bin/gost-server
+	install -m 0644 config/server.conf debian/gost-proxy-server/etc/gost-proxy/server.conf
+
+	echo '[Unit]' > debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'Description=ГОСТ Прокси-Сервер' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'After=network.target' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo '' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo '[Service]' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'Type=simple' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'ExecStart=/usr/bin/gost-server' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'Restart=on-failure' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'RestartSec=5' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'LimitNOFILE=65536' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo '' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo '[Install]' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+	echo 'WantedBy=multi-user.target' >> debian/gost-proxy-server/usr/lib/systemd/system/gost-proxy-server.service
+
+	install -m 0755 build/gost-client debian/gost-proxy-client/usr/bin/gost-client
+	echo '[Unit]' > debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'Description=ГОСТ Прокси-Клиент' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'After=network.target' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '[Service]' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'Type=simple' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'ExecStart=/usr/bin/gost-client' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'Restart=on-failure' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'RestartSec=5' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo '[Install]' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+	echo 'WantedBy=multi-user.target' >> debian/gost-proxy-client/usr/lib/systemd/system/gost-proxy-client.service
+
+override_dh_auto_clean:
+	rm -rf build
