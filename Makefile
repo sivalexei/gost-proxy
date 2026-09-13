@@ -23,8 +23,8 @@ QUIC_LAYER_OBJ = $(BUILD_DIR)/quic_layer.o
 OBFUSCATION_OBJ = $(BUILD_DIR)/obfuscation.o
 TCP_HELPERS_OBJ = $(BUILD_DIR)/tcp_helpers.o
 DNS_CACHE_OBJ = $(BUILD_DIR)/dns_cache.o
-SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(SOCKS5_SERVER_OBJ)
-CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ)
+SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(SOCKS5_SERVER_OBJ) $(BUILD_DIR)/key_derivation.o $(BUILD_DIR)/chacha20.o
+CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(BUILD_DIR)/key_derivation.o $(BUILD_DIR)/chacha20.o
 PROXY_OBJ = $(BUILD_DIR)/proxy.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ)
 
 .PHONY: all clean setup test test-https build-curl-openssl asan sanitize-werror
@@ -71,6 +71,21 @@ $(BUILD_DIR)/tcp_helpers.o: $(SRC_DIR)/core/tcp_helpers.asm | $(BUILD_DIR)
 	$(NASM) $(NASMFLAGS) $< -o $@
 
 $(BUILD_DIR)/dns_cache.o: $(SRC_DIR)/core/dns_cache.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/hmac_sha256.o: $(SRC_DIR)/crypto/hmac_sha256.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/key_derivation.o: $(SRC_DIR)/core/key_derivation.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/chacha20.o: $(SRC_DIR)/crypto/chacha20.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/key_derivation.o: $(SRC_DIR)/core/key_derivation.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/chacha20.o: $(SRC_DIR)/crypto/chacha20.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(CMAC_OBJ) $(SERVER_OBJ)
