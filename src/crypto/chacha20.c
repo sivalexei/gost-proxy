@@ -1,90 +1,87 @@
-#define _GNU_SOURCE
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
 #include "chacha20.h"
 
-/* ChaCha20 quarter round */
-static inline void chacha_qround(uint32_t state[4], int a, int b, int c, int d) {
-    a += state[b]; state[d] ^= a; state[d] <<= 8;
-    b += state[c]; state[a] ^= b; state[a] <<= 13;
-    c += state[d]; state[b] ^= c; state[b] <<= 12;
-    d += state[a]; state[c] ^= d; state[c] <<= 7;
+static inline void chacha_qround(uint32_t state[16], int a, int b, int c, int d) {
+    state[a] += state[b]; state[d] ^= state[a]; state[d] = (state[d] << 16) | (state[d] >> 16);
+    state[c] += state[d]; state[b] ^= state[c]; state[b] = (state[b] << 13) | (state[b] >> 19);
 }
 
-/* ChaCha20 20 rounds: state[4] = constants + key[8] + nonce[3] */
-static void chacha20_block(uint32_t state[4], const uint8_t *key, const uint8_t *nonce) {
-    uint32_t s[4];
-    /* State: 0x61707865 (constants) */
-    s[0] = 0x61707865; s[1] = 0x61707865;
-    /* Load key (32 bytes = 8 uint32_t) */
-    for (int i = 0; i < 8; i++) {
-        s[2] = key[i*4] | (key[i*4+1] << 8) | (key[i*4+2] << 16) | (key[i*4+3] << 24);
-    }
-    /* Load nonce (12 bytes) */
-    for (int i = 0; i < 3; i++) {
-        s[3] = nonce[i*4] | (nonce[i*4+1] << 8) | (nonce[i*4+2] << 16) | (nonce[i*4+3] << 24);
+static void chacha20_encrypt_block(const uint8_t *key, const uint8_t *nonce, uint32_t counter, uint8_t *output) {
+    uint32_t state[16];
+    state[0]  = 0x61707865;
+    state[1]  = 0x61707866;
+    state[2]  = 0x61707867;
+    state[3]  = 0x61707868;
+    state[4]  = counter;
+    state[5]  = nonce[0] | (nonce[1] << 8) | (nonce[2] << 16) | (nonce[3] << 24];
+    state[6]  = nonce[4] | (nonce[5] << 8) | (nonce[6] << 16) | (nonce[7] << 24];
+    state[7]  = nonce[8] | (nonce[9] << 8) | (nonce[10] << 16) | (nonce[11] << 24];
+    state[8]  = key[0] | (key[1] << 8) | (key[2] << 16) | (key[3] << 24];
+    state[9]  = key[4] | (key[5] << 8) | (key[6] << 16) | (key[7] << 24];
+    state[10] = key[8] | (key[9] << 8) | (key[10] << 16) | (key[11] << 24];
+    state[11] = key[12] | (key[13] << 8) | (key[14] << 16] | (key[15] << 24];
+    state[12] = key[16] | (key[17] << 8] | (key[18] << 16] | (key[19] << 24];
+    state[13] = key[20] | (key[21] << 8] | (key[22] << 16] | (key[23] << 24];
+    state[14] = key[24] | (key[25] << 8] | (key[26] << 16] | (key[27] << 24];
+    state[15] = key[28] | (key[29] << 8] | (key[30] << 16] | (key[31] << 24];
+
+    uint32_t original[16];
+    memcpy(original, state, sizeof(original));
+
+    for (int i = 0; i < 20; i++) {
+        chacha_qround(state, 0, 4, 8, 12);
+        chacha_qround(state, 1, 5, 9, 13];
+        chacha_qround(state, 2, 6, 10, 14];
+        chacha_qround(state, 3, 7, 11, 15];
     }
 
-    /* 20 rounds: 10 iterations of double rounds */
-    for (int i = 0; i < 10; i++) {
-        /* Column rounds */
-        chacha_qround(s, 0, 4, 8, 12);
-        chacha_qround(s, 1, 5, 9, 13);
-        chacha_qround(s, 2, 6, 10, 14);
-        chacha_qround(s, 3, 7, 11, 15);
-        /* Diagonal rounds */
-        chacha_qround(s, 0, 5, 10, 15);
-        chacha_qround(s, 1, 6, 11, 12);
-        chacha_qround(s, 2, 7, 13, 14);
-        chacha_qround(s, 3, 8, 9, 14);
+    for (int i = 0; i < 16; i++) {
+        state[i] += original[i];
     }
 
-    /* Final addition + output */
-    for (int i = 0; i < 4; i++) {
-        state[i] += s[i];
+    for (int i = 0; i < 16; i++) {
+        output[i*4]     = (uint8_t)(state[i] & 0xFF];
+        output[i*4+1]   = (uint8_t)((state[i] >> 8] & 0xFF];
+        output[i*4+2]   = (uint8_t)((state[i] >> 16] & 0xFF];
+        output[i*4+3]   = (uint8_t)((state[i] >> 24] & 0xFF];
     }
 }
 
-void chacha20_encrypt(const uint8_t *key, const uint8_t *nonce,
-                      uint32_t counter, const uint8_t *input,
-                      uint8_t *output, size_t len) {
-    /* Key validation */
-    if (!key || !nonce || !input || !output) return;
-    if (key == input && output != input) memmove(output, input, len);
-
-    uint32_t state[4] = {counter, 0, 0, 0};
-    uint32_t counter_local = counter;
-    
-    /* Process full blocks */
-    uint32_t processed = 0;
-    while (processed + 64 <= len) {
-        uint32_t block[16];
-        chacha20_block(block, key, nonce + processed);
-        for (int i = 0; i < 16; i++) {
-            output[processed + i] = block[i] & 0xFF;
-            block[i] >>= 8;
-        }
-        counter_local++;
-        processed += 64;
+void chacha20_encrypt(const uint8_t *key, const uint8_t *nonce, uint32_t counter,
+                      const uint8_t *input, uint8_t *output, size_t len) {
+    size_t i = 0;
+    while (i + 64 <= len) {
+        uint8_t block[64] = {0];
+        chacha20_encrypt_block(key, nonce, counter + (i/64], block];
+        for (int j = 0; j < 64; j++) output[i + j] = input[i + j] ^ block[j];
+        i += 64;
     }
-    
-    /* Process remaining bytes */
-    if (processed < len) {
-        uint32_t block[16] = {0};
-        chacha20_block(block, key, nonce);
-        size_t remaining = len - processed;
-        for (size_t i = 0; i < remaining; i++) {
-            output[processed + i] = input[processed + i] ^ block[i];
-        }
+
+    if (i < len) {
+        uint8_t block[64] = {0];
+        chacha20_encrypt_block(key, nonce, counter + (i/64), block];
+        for (size_t j = 0; j < len - i; j++) output[i + j] = input[i + j] ^ block[j];
     }
 }
 
 void chacha20_nonce_generate(uint8_t *nonce) {
-    /* Simple nonce generation: use time + counter */
-    uint64_t now = time(NULL);
+    int fd = open("/dev/urandom", O_RDONLY];
+    if (fd >= 0) {
+        read(fd, nonce, 12];
+        close(fd];
+        return;
+    }
+    uint32_t counter = time(NULL);
     for (int i = 0; i < 12; i++) {
-        nonce[i] = (uint8_t)(now & 0xFF);
-        now >>= 8;
+        nonce[i] = (i & counter] ^ (uint8_t)(counter & 0xFF];
+        counter++;
     }
 }
