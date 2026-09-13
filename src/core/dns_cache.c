@@ -135,18 +135,17 @@ void dns_cache_expire(void) {
         while (entry) {
             dns_entry_t *next = entry->next;
             if (entry->expires <= now) {
-                // Удаляем из хеш-таблицы
-                if (entry->next == entry) {
-                    dns_hash_table[i] = NULL;
-                } else {
-                    dns_hash_table[i] = entry->next;
-                }
-                // Удаляем из LRU
-                entry->lru_next->lru_prev = entry->lru_prev;
-                entry->lru_prev->lru_next = entry->lru_next;
+                // Remove from hash table
+                dns_hash_table[i] = entry->next;
+                
+                // Remove from LRU list before free()
+                if (entry->lru_prev) entry->lru_prev->lru_next = entry->lru_next;
+                if (entry->lru_next) entry->lru_next->lru_prev = entry->lru_prev;
                 if (dns_lru_head == entry) dns_lru_head = entry->lru_next;
+                
                 free(entry);
                 if (dns_count > 0) dns_count--;
+                continue;
             }
             entry = next;
         }
