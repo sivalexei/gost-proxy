@@ -40,6 +40,9 @@ static int s5_send_all(int fd, const void *buf, size_t len) {
     return 0;
 }
 
+// Обработчик аутентификации RFC 1929
+// Клиент отправляет: VER(1) | ULEN(1) | USER(ULEN) | PASSLEN(1) | PASS(PASSLEN)
+// Сервер сравнивает с stored credentials и отправляет: VER(1) | STATUS(1)
 static int s5_handle_auth(int fd, const socks5_auth_t *auth) {
     uint8_t buf[256];
     ssize_t n = recv(fd, buf, sizeof(buf), 0);
@@ -48,8 +51,19 @@ static int s5_handle_auth(int fd, const socks5_auth_t *auth) {
     if (auth && n >= 3) {
         uint8_t ulen = buf[1];
         if (n >= 3 + ulen + 1) {
-            socks5_auth_set_credentials((socks5_auth_t*)auth,
-                (const char*)buf+2, (const char*)(buf+2+ulen+1));
+            uint8_t resp[256];
+            size_t resp_len = 0;
+            int result = socks5_auth_handle_request(buf, n, resp, &resp_len, auth);
+            
+            if (result == 0) {
+                // Успех: отправляем успешный ответ
+                s5_send_all(fd, resp, resp_len);
+                return 0;
+            } else {
+                // Ошибка: отправляем failure
+                s5_send_all(fd, resp, resp_len);
+                return -1;
+            }
         }
     }
     return s5_send_all(fd, buf+1, 2);

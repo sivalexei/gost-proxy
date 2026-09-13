@@ -25,15 +25,66 @@ void socks5_auth_set_credentials(socks5_auth_t *creds, const char *username, con
 }
 
 // Обработка запроса аутентификации SOCKS5 (RFC 1929)
+// RFC 1929 USER/VEND: VER(1), ULEN(1), USER(ULEN), PASSLEN(1), PASS(PASSLEN)
+// Ответ: VER(1), STATUS(1) где STATUS=0x00 success, 0x02 failure
 int socks5_auth_handle_request(const uint8_t *request, size_t request_len,
                               uint8_t *response, size_t *response_len,
                               const socks5_auth_t *creds) {
-    (void)creds;
-    (void)request;
-    (void)request_len;
+    // Минимальный запрос должен быть: VER + ULEN + PASSLEN >= 1 + хотя бы 1 байт пароля
+    if (request_len < 4U) {
+        response[0] = 0x01; response[1] = 0xFF; *response_len = 2;
+        return -1;
+    }
     
-    response[0] = 0x00; response[1] = 0xFF; *response_len = 2;
-    return -1;
+    uint8_t ver = request[0];
+    if (ver != 0x01) {
+        response[0] = 0x01; response[1] = 0xFF; *response_len = 2;
+        return -1;
+    }
+    
+    uint32_t ulen = request[1];
+    
+    // Проверка достаточности данных
+    size_t min_req = 3ULL + ulen + 1ULL;
+    if (request_len < min_req) {
+        response[0] = 0x01; response[1] = 0xFF; *response_len = 2;
+        return -1;
+    }
+    
+    uint32_t pass_len = request[2 + ulen + 1 - 1];
+    
+    if (request_len < 3ULL + ulen + pass_len) {
+        response[0] = 0x01; response[1] = 0xFF; *response_len = 2;
+        return -1;
+    }
+    
+    const uint8_t *username_ptr = request + 2;
+    const uint8_t *password_ptr = request + 2 + ulen + 1;
+    
+    // Сравниваем username
+    size_t uname_len = strlen((const char*)creds->username);
+    size_t total_req = 3 + ulen + pass_len;
+    int match = 0;
+    if (request_len >= total_req && ulen == uname_len &&
+        memcmp(username_ptr, creds->username, ulen) == 0) {
+        match = 1;
+    }
+    
+    // Сравниваем password
+    size_t pass_len_stored = strlen((const char*)creds->password);
+    int pass_match = 0;
+    if (request_len >= total_req && pass_len == pass_len_stored &&
+        memcmp(password_ptr, creds->password, pass_len) == 0) {
+        pass_match = 1;
+    }
+    
+    if (match && pass_match) {
+        response[0] = 0x01; response[1] = 0x00; *response_len = 2;
+        return 0;
+    } else {
+        response[0] = 0x01; response[1] = 0x02; *response_len = 2;
+        return -1;
+    }
 }
 
 // Обработка запроса на установку соединения после аутентификации
