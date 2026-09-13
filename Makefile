@@ -23,9 +23,10 @@ QUIC_LAYER_OBJ = $(BUILD_DIR)/quic_layer.o
 OBFUSCATION_OBJ = $(BUILD_DIR)/obfuscation.o
 TCP_HELPERS_OBJ = $(BUILD_DIR)/tcp_helpers.o
 DNS_CACHE_OBJ = $(BUILD_DIR)/dns_cache.o
-SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(SOCKS5_SERVER_OBJ) $(BUILD_DIR)/key_derivation.o $(BUILD_DIR)/chacha20.o
-CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(BUILD_DIR)/key_derivation.o $(BUILD_DIR)/chacha20.o
-PROXY_OBJ = $(BUILD_DIR)/proxy.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ)
+SOCKS5_AUTH_OBJ = $(BUILD_DIR)/socks5_auth.o
+SERVER_OBJ = $(BUILD_DIR)/server.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(SOCKS5_SERVER_OBJ) $(BUILD_DIR)/key_derivation.o $(BUILD_DIR)/chacha20.o $(SOCKS5_AUTH_OBJ)
+CLIENT_OBJ = $(BUILD_DIR)/client.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(SOCKS5_OBJ) $(QUIC_LAYER_OBJ) $(OBFUSCATION_OBJ) $(DNS_CACHE_OBJ) $(BUILD_DIR)/key_derivation.o $(BUILD_DIR)/chacha20.o $(SOCKS5_AUTH_OBJ)
+PROXY_OBJ = $(BUILD_DIR)/proxy.o $(BUILD_DIR)/session.o $(CONFIG_OBJ) $(LOG_OBJ) $(TCP_HELPERS_OBJ) $(SOCKS5_AUTH_OBJ)
 
 .PHONY: all clean setup test test-https build-curl-openssl asan sanitize-werror
 
@@ -88,16 +89,10 @@ $(BUILD_DIR)/aes.o: $(SRC_DIR)/crypto/aes.c | $(BUILD_DIR)
 $(BUILD_DIR)/ecc.o: $(SRC_DIR)/crypto/ecc.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/sha256.o: $(SRC_DIR)/crypto/sha256.c | $(BUILD_DIR)
+$(BUILD_DIR)/sha256.o: $(SRC_DIR)/crypto/sha256.c | (BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/aes.o: $(SRC_DIR)/crypto/aes.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/ecc.o: $(SRC_DIR)/crypto/ecc.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/sha256.o: $(SRC_DIR)/crypto/sha256.c | $(BUILD_DIR)
+$(BUILD_DIR)/socks5_auth.o: $(SRC_DIR)/network/socks5_auth.c | (BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(CMAC_OBJ) $(SERVER_OBJ)
@@ -109,22 +104,22 @@ $(BUILD_DIR)/gost-client: $(CRYPTO_OBJ) $(CMAC_OBJ) $(CLIENT_OBJ)
 test: $(BUILD_DIR)/gost-test $(BUILD_DIR)/test_protocol $(BUILD_DIR)/test_pack_roundtrip
 	./$(BUILD_DIR)/gost-test && echo '---' && ./$(BUILD_DIR)/test_protocol && echo '---' && ./$(BUILD_DIR)/test_pack_roundtrip
 
-$(BUILD_DIR)/gost-test: $(CRYPTO_OBJ) $(BUILD_DIR)/gost_test.o | $(BUILD_DIR)
+$(BUILD_DIR)/gost-test: $(CRYPTO_OBJ) $(BUILD_DIR)/gost_test.o | (BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/gost_test.o: $(SRC_DIR)/crypto/gost_test.c | $(BUILD_DIR)
+$(BUILD_DIR)/gost_test.o: $(SRC_DIR)/crypto/gost_test.c | (BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/test_protocol: $(CRYPTO_OBJ) $(CMAC_OBJ) $(BUILD_DIR)/test_protocol.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o | $(BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/test_protocol.o: $(SRC_DIR)/core/test_protocol.c | $(BUILD_DIR)
+$(BUILD_DIR)/test_protocol.o: $(SRC_DIR)/core/test_protocol.c | (BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/test_pack_roundtrip: $(BUILD_DIR)/test_pack_roundtrip.o $(BUILD_DIR)/session.o $(BUILD_DIR)/obfuscation.o $(BUILD_DIR)/log.o $(BUILD_DIR)/gost_cipher.o $(CMAC_OBJ) | $(BUILD_DIR)
 	$(CC) $^ -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/test_pack_roundtrip.o: test_pack_roundtrip.c | $(BUILD_DIR)
+$(BUILD_DIR)/test_pack_roundtrip.o: test_pack_roundtrip.c | (BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test-https:
