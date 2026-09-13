@@ -82,10 +82,22 @@ $(BUILD_DIR)/key_derivation.o: $(SRC_DIR)/core/key_derivation.c | $(BUILD_DIR)
 $(BUILD_DIR)/chacha20.o: $(SRC_DIR)/crypto/chacha20.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/key_derivation.o: $(SRC_DIR)/core/key_derivation.c | $(BUILD_DIR)
+$(BUILD_DIR)/aes.o: $(SRC_DIR)/crypto/aes.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/chacha20.o: $(SRC_DIR)/crypto/chacha20.c | $(BUILD_DIR)
+$(BUILD_DIR)/ecc.o: $(SRC_DIR)/crypto/ecc.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/sha256.o: $(SRC_DIR)/crypto/sha256.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/aes.o: $(SRC_DIR)/crypto/aes.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/ecc.o: $(SRC_DIR)/crypto/ecc.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/sha256.o: $(SRC_DIR)/crypto/sha256.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/gost-server: $(CRYPTO_OBJ) $(CMAC_OBJ) $(SERVER_OBJ)
