@@ -2,6 +2,7 @@
 #define SOCKS5_SERVER_H
 
 #include <stdint.h>
+#include "socks5_auth.h"
 
 typedef struct s5_conn_t {
     int tcp_fd;
@@ -14,9 +15,9 @@ typedef struct s5_conn_t {
     uint8_t nonce[12];
 } s5_conn_t;
 
-int socks5_server_start(uint16_t port, const char *key);
+int socks5_server_start(uint16_t port, const char *key, socks5_auth_t *auth);
 void socks5_server_stop(void);
 void s5_init_session(s5_conn_t *conn, uint64_t session_id, const uint8_t *ek, const uint8_t *nonce);
 void s5_set_session_id(s5_conn_t *conn, uint64_t session_id);
 
-#endif
+#endif /* SOCKS5_SERVER_H */

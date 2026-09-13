@@ -824,9 +824,16 @@ int main(int argc, char *argv[]) {
     /* Запускаем UDP-сервер */
     pthread_t thread; pthread_create(&thread, NULL, server_thread, &qs_obj);
 
+    /* Инициализация SOCKS5 auth credentials */
+    socks5_auth_t auth;
+    socks5_auth_init(&auth);
+    if (cfg.socks5_user[0]) {
+        socks5_auth_set_credentials(&auth, cfg.socks5_user, cfg.socks5_pass);
+    }
+
     /* Запускаем SOCKS5-сервер */
     if (cfg.socks5_port > 0) {
-        if (socks5_server_start(cfg.socks5_port, cfg.key) != 0)
+        if (socks5_server_start(cfg.socks5_port, cfg.key, &auth) != 0)
             log_warn("SOCKS5: failed to start");
     }
         log_warn("SOCKS5: failed to start");
