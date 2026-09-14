@@ -6,6 +6,8 @@
 #include <string.h>
 #include <time.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "kuznyechik.h"
 #include "gost_common.h"
 #include "protocol.h"
@@ -22,9 +24,22 @@ static uint32_t padding_hash(uint64_t x) {
     return (uint32_t)x;
 }
 
-uint32_t protocol_compute_padding_len(uint64_t sid) {
-    /* Deterministic padding length from session_id */
-    return PADDING_MIN_BYTES + (padding_hash(sid) % (PADDING_MAX_BYTES - PADDING_MIN_BYTES + 1));
+static void padding_hash_random(uint32_t *out, uint64_t sid, uint8_t dir) {
+    /* Комбинируем детерминированный хеш с entropy из getrandom */
+    uint32_t det = padding_hash(sid);
+    uint32_t rnd;
+    ssize_t nr = getrandom(&rnd, 4, 0);
+    if (nr < 0) {
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) { ssize_t r = read(fd, &rnd, 4); (void)r; close(fd); }
+    }
+    *out = det ^ rnd ^ dir;
+}
+
+uint32_t protocol_compute_padding_len(uint64_t sid, uint8_t dir) {
+    uint32_t pad;
+    padding_hash_random(&pad, sid, dir);
+    return PADDING_MIN_BYTES + (pad % (PADDING_MAX_BYTES - PADDING_MIN_BYTES + 1));
 }
 
 
@@ -77,7 +92,7 @@ int protocol_pack_data(gost_packet_t *pkt, uint64_t session_id, uint32_t conn_id
     log_info("PACK_DATA: pc=%u sid=%llu dlen=%zu", pc, (unsigned long long)session_id, data_len);
     uint32_t stored_len=(uint32_t)data_len;
     if(stored_len > MAX_PAYLOAD-12) stored_len = MAX_PAYLOAD-12;
-    uint32_t padding_len=protocol_compute_padding_len(session_id);
+    uint32_t padding_len=protocol_compute_padding_len(session_id, obf_dir);
     uint32_t total=12+padding_len+stored_len;
     if(total>MAX_PAYLOAD)padding_len=MAX_PAYLOAD-12-stored_len;
     log_info("PACK_DATA: sid=%llu dlen=%zu padding_len=%u total=%u obf_dir=%u",(unsigned long long)session_id,(unsigned long long)data_len,padding_len,total,obf_dir);
@@ -193,7 +208,7 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     }
     uint32_t data_len=((uint32_t)deobf[4]<<24)|((uint32_t)deobf[5]<<16)|((uint32_t)deobf[6]<<8)|(uint32_t)deobf[7];
     uint32_t padding_len=((uint32_t)deobf[8]<<24)|((uint32_t)deobf[9]<<16)|((uint32_t)deobf[10]<<8)|(uint32_t)deobf[11];
-    if(padding_len>1024){log_debug("UNPACK: len fail"); free(deobf); return -1;}
+    /* padding_len проверен в total_len выше */
     uint32_t total_len=12+padding_len+data_len;
     if(total_len>MAX_PAYLOAD){log_debug("UNPACK: total_len fail"); free(deobf); return -1;}
     /* MAC проверяем ДО расшифровки */

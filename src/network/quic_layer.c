@@ -310,7 +310,8 @@ ssize_t quic_server_recv(quic_server_t *qs, uint8_t *buf, size_t max_len,
             for (int i = 0; i < ret; i++) {
                 if (ev2[i].data.fd == qs->wfd) {
                     uint64_t dummy;
-                    read(qs->wfd, &dummy, sizeof(dummy));
+                    ssize_t _r = read(qs->wfd, &dummy, sizeof(dummy));
+                    if (_r > 0) (void)0;
                     got_eventfd = 1;
                 }
             }

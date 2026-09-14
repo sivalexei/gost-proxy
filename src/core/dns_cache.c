@@ -31,35 +31,51 @@ int dns_cache_init(void) {
     return 0;
 }
 
+/* static void dns_hash_remove(dns_entry_t *entry) {
+    unsigned int h = 0;
+    for (const char *p = entry->host; *p; p++) h += *p;
+    h %= DNS_CACHE_MAX;
+    if (dns_hash_table[h] == entry) {
+        dns_hash_table[h] = entry->next;
+    } else {
+        dns_entry_t *cur = dns_hash_table[h];
+        while (cur && cur->next != entry) cur = cur->next;
+        if (cur) cur->next = entry->next;
+    }
+} */
+
 int dns_cache_lookup(const char *hostname, dns_af_t *af, void *out_addr) {
     if (!cache_initialized) return -1;
     
     // Ищем в кеше
     pthread_mutex_lock(&cache_lock);
     
-    // Проверка хеш-таблицы
     unsigned int hash = 0;
     for (const char *p = hostname; *p; p++) hash += *p;
     hash %= DNS_CACHE_MAX;
     
+    dns_entry_t *prev = NULL;
     dns_entry_t *entry = dns_hash_table[hash];
     while (entry) {
         if (strcmp(entry->host, hostname) == 0) {
-            if (time(NULL) < entry->expires) {
-                // Кэш активен — используем
-                *af = entry->af;
-                if (out_addr) {
-                    memcpy(out_addr, &entry->addr, 
-                           entry->af == DNS_AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
-                }
+            if (time(NULL) >= entry->expires) {
+                // Истек — удалить из хеш-таблицы
+                if (prev) prev->next = entry->next;
+                else dns_hash_table[hash] = entry->next;
+                free(entry);
                 pthread_mutex_unlock(&cache_lock);
-                return 0;
+                return -1;
             }
-            // Истек — удалить
-            entry->next = entry->next ? entry->next : entry; // circular
-            entry->lru_prev = entry->lru_prev ? entry->lru_prev : entry;
-            entry->lru_next = entry->lru_next ? entry->lru_next : entry;
+            // Кэш активен — используем
+            *af = entry->af;
+            if (out_addr) {
+                memcpy(out_addr, &entry->addr, 
+                       entry->af == DNS_AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
+            }
+            pthread_mutex_unlock(&cache_lock);
+            return 0;
         }
+        prev = entry;
         entry = entry->next;
     }
     pthread_mutex_unlock(&cache_lock);
@@ -132,11 +148,13 @@ void dns_cache_expire(void) {
     pthread_mutex_lock(&cache_lock);
     for (int i = 0; i < DNS_CACHE_MAX; i++) {
         dns_entry_t *entry = dns_hash_table[i];
+        dns_entry_t *prev = NULL;
         while (entry) {
             dns_entry_t *next = entry->next;
             if (entry->expires <= now) {
                 // Remove from hash table
-                dns_hash_table[i] = entry->next;
+                if (prev) prev->next = entry->next;
+                else dns_hash_table[i] = entry->next;
                 
                 // Remove from LRU list before free()
                 if (entry->lru_prev) entry->lru_prev->lru_next = entry->lru_next;
@@ -145,8 +163,11 @@ void dns_cache_expire(void) {
                 
                 free(entry);
                 if (dns_count > 0) dns_count--;
+                entry = prev;
+                prev = NULL;
                 continue;
             }
+            prev = entry;
             entry = next;
         }
     }

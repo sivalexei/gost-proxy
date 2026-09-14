@@ -200,7 +200,7 @@ static inline int socks5_auth_check(const uint8_t *buf, size_t len) {
 static void* proxy_data_thread(void *arg) {
     parg_t *p = (parg_t*)arg; int fd=p->fd; uint32_t mcid=p->cid; free(p);
     uint8_t buf[SOCKS5_BUF_SIZE];
-    atomic_uint recv_ctr = {0};
+    uint32_t recv_ctr = 0;
     while (socks5_running) {
         struct pollfd pf={.fd=fd,.events=POLLIN}; int r=poll(&pf,1,100);
         if (r>0&&(pf.revents&POLLIN)) {

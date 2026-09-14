@@ -5,8 +5,8 @@
 #include "kuznyechik.h"
 #include "obfuscation.h"
 
-/* Вычисление длины padding для сессии (детерминировано от session_id) */
-uint32_t protocol_compute_padding_len(uint64_t session_id);
+/* Вычисление длины padding — детерминировано session_id, добавлена случайная вариация */
+uint32_t protocol_compute_padding_len(uint64_t session_id, uint8_t dir);
 
 /* Вставка случайного padding в payload (ПОСЛЕ данных)
  * Padding bytes генерируются через getrandom()

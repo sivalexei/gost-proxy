@@ -70,14 +70,19 @@ int socks5_auth_handle_request(const uint8_t *request, size_t request_len,
         match = 1;
     }
     
-    // Сравниваем password
+    // Сравниваем password constant-time
     size_t pass_len_stored = strlen((const char*)creds->password);
     int pass_match = 0;
-    if (request_len >= total_req && pass_len == pass_len_stored &&
-        memcmp(password_ptr, creds->password, pass_len) == 0) {
-        pass_match = 1;
+    if (request_len >= total_req && pass_len == pass_len_stored) {
+        int x = 0;
+        const uint8_t *a = password_ptr;
+        const uint8_t *b = creds->password;
+        for (size_t i = 0; i < pass_len; i++)
+            x |= a[i] ^ b[i];
+        if (x == 0) pass_match = 1;
     }
     
+    /* Не раскрываем результат early — всегда проверяем оба поля */
     if (match && pass_match) {
         response[0] = 0x01; response[1] = 0x00; *response_len = 2;
         return 0;
