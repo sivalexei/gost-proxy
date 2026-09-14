@@ -138,8 +138,8 @@ int quic_client_connect(quic_client_t *qc, const char *server_addr, uint16_t ser
         log_error("QUIC: recv error: %s", strerror(errno));
         close(qc->server_fd); qc->server_fd = -1; return -1;
     } while (1);
-    if (n < (ssize_t)(4 + 1 + 4 + 8)) {
-        log_error("QUIC: handshake response short (n=%zd, expected>=%d)", n, (int)(4 + 1 + 4 + 8));
+    if (n < (ssize_t)(4 + 1 + 4 + 8 + 1 + 8 + NONCE_SIZE)) {
+        log_error("QUIC: handshake response short (n=%zd, expected>=%d)", n, (int)(4 + 1 + 4 + 8 + 1 + 8 + NONCE_SIZE));
         close(qc->server_fd); qc->server_fd = -1; return -1;
     }
 

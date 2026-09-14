@@ -689,10 +689,10 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
 /* Отправка KEEPALIVE всем активным сессиям */
 /* Копия активных сессий для отправки без блокировки */
 typedef struct { uint64_t session_id; struct sockaddr_in addr; socklen_t addr_len; } session_addr_t;
-static void send_keepalive_to_sessions(quic_server_t *qs, session_addr_t *saddrs, int *count) {
+static void send_keepalive_to_sessions(quic_server_t *qs, session_addr_t *saddrs, int *count, int saddrs_cap) {
     *count = 0;
     pthread_mutex_lock(&sessions_lock);
-    for (int i = 0; i < max_sessions; i++) {
+    for (int i = 0; i < max_sessions && *count < saddrs_cap; i++) {
         if (sessions[i].active && sessions[i].session_id) {
             saddrs[*count].session_id = sessions[i].session_id;
             saddrs[*count].addr = sessions[i].client_addr;
@@ -734,7 +734,7 @@ static void* server_thread(void *arg) {
         time_t now = time(NULL);
         if (now - last_keepalive >= 30) {  /* каждые 30 сек */
             int count;
-            send_keepalive_to_sessions(qs, saddrs, &count);
+            send_keepalive_to_sessions(qs, saddrs, &count, MAX_PROXY_CONNS);
             if (count > 0) log_debug("KEEPALIVE sent to %d sessions", count);
             last_keepalive = now;
             expire_sessions();

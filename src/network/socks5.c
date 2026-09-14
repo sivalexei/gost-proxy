@@ -273,9 +273,9 @@ static void* socks5_client_thread(void *arg) {
         default:{uint8_t e[]={0x05,0x08,0,1,0,0,0,0,0,0};send(fd,e,10,0);close(fd);return NULL;}
     }
     log_info("SOCKS5 CONNECT %s:%u",th,tp);
-    uint32_t mcid=__sync_fetch_and_add(&next_cid,1);
+    uint32_t mcid = __sync_fetch_and_add(&next_cid, 1) % MAX_SIMUL_CONNS;
     /* P4-11: conn_id overflow — сброс при переполнении */
-    if (next_cid >= next_cid_max) { next_cid = 1; log_info("SOCKS5: conn_id counter reset (overflow protection)"); }
+    if (next_cid >= next_cid_max) { next_cid = 0; log_info("SOCKS5: conn_id counter reset (overflow protection)"); }
     log_info("SOCKS5: sending CONNECT, session_id=%llu, cid=%u", (unsigned long long)proxy_session.session_id, mcid);
     /* DNS-кэш с LRU и TTL 1 сутки, поддержка IPv6 */
     dns_af_t af;
