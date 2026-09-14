@@ -209,8 +209,14 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     uint32_t data_len=((uint32_t)deobf[4]<<24)|((uint32_t)deobf[5]<<16)|((uint32_t)deobf[6]<<8)|(uint32_t)deobf[7];
     uint32_t padding_len=((uint32_t)deobf[8]<<24)|((uint32_t)deobf[9]<<16)|((uint32_t)deobf[10]<<8)|(uint32_t)deobf[11];
     /* padding_len проверен в total_len выше */
-    uint32_t total_len=12+padding_len+data_len;
-    if(total_len>MAX_PAYLOAD){log_debug("UNPACK: total_len fail"); free(deobf); return -1;}
+    /* Check for overflow before addition: 12 + padding_len + data_len <= MAX_PAYLOAD */
+    if (padding_len > MAX_PAYLOAD - 12 || data_len > MAX_PAYLOAD - 12) {
+        log_debug("UNPACK: padding/data_len out of range"); free(deobf); return -1;
+    }
+    uint32_t total_len = 12 + padding_len + data_len;
+    if (total_len > MAX_PAYLOAD || total_len < 12 + padding_len) {
+        log_debug("UNPACK: total_len fail"); free(deobf); return -1;
+    }
     /* MAC проверяем ДО расшифровки */
     uint8_t emac[AUTH_TAG_SIZE];
     uint8_t auth_buf[16+12+MAX_PAYLOAD];
