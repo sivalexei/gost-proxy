@@ -842,7 +842,6 @@ int main(int argc, char *argv[]) {
         if (socks5_server_start(cfg.socks5_port, cfg.key, &auth) != 0)
             log_warn("SOCKS5: failed to start");
     }
-        log_warn("SOCKS5: failed to start");
 
     while (running) { struct timeval tv = { .tv_usec = 100000 }; select(0, NULL, NULL, NULL, &tv); }
     log_info("Server shutting down...");

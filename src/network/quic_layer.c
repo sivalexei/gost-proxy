@@ -218,14 +218,8 @@ ssize_t quic_client_send(quic_client_t *qc, const uint8_t *data, size_t len) {
 
 ssize_t quic_client_recv(quic_client_t *qc, uint8_t *buf, size_t maxlen, int timeout_ms) {
     if (!qc || !qc->active || qc->server_fd < 0) return QUIC_ERROR;
-    int epfd = epoll_create1(0);
-    if (epfd < 0) return QUIC_ERROR;
-    struct epoll_event ev = { .events = EPOLLIN };
-    ev.data.fd = qc->server_fd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, qc->server_fd, &ev);
-    struct epoll_event events;
-    int ret = epoll_wait(epfd, &events, 1, timeout_ms);
-    close(epfd);
+    struct pollfd pfd = { .fd = qc->server_fd, .events = POLLIN };
+    int ret = poll(&pfd, 1, timeout_ms);
     if (ret == 0) return 0;
     if (ret < 0) return QUIC_ERROR;
     ssize_t n = recvfrom(qc->server_fd, buf, maxlen, 0, NULL, NULL);
@@ -281,57 +275,35 @@ ssize_t quic_server_recv(quic_server_t *qs, uint8_t *buf, size_t max_len,
                          struct sockaddr_in *client_addr, socklen_t *addr_len,
                          int timeout_ms) {
     if (!qs || !qs->active || qs->server_fd < 0) return QUIC_ERROR;
-    int epfd = epoll_create1(0);
-    if (epfd < 0) return QUIC_ERROR;
-    struct epoll_event ev = { .events = EPOLLIN };
-    ev.data.fd = qs->server_fd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, qs->server_fd, &ev);
-    /* Подписываем eventfd для пробуждения (если задан) */
+    struct pollfd pfds[2];
+    int nfds = 1;
+    pfds[0].fd = qs->server_fd;
+    pfds[0].events = POLLIN;
     if (qs->wfd >= 0) {
-        struct epoll_event ev_w = { .events = EPOLLIN };
-        ev_w.data.fd = qs->wfd;
-        epoll_ctl(epfd, EPOLL_CTL_ADD, qs->wfd, &ev_w);
+        pfds[1].fd = qs->wfd;
+        pfds[1].events = POLLIN;
+        nfds = 2;
     }
-    ssize_t n = 0;
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    long total_ms = 0;
-    while (total_ms < timeout_ms) {
-        int chunk = timeout_ms - total_ms;
-        struct epoll_event ev2[2];
-        memset(ev2, 0, sizeof(ev2));
-        int ret = epoll_wait(epfd, ev2, 2, chunk);
-        if (!qs->active) { log_debug("QUIC: shutdown detected, active=%d", qs->active); close(epfd); return QUIC_ERROR; }  /* shutdown */
-        if (ret < 0) { close(epfd); return QUIC_ERROR; }
-        if (ret == 0) { /* timeout on this chunk */ }
-        else {
-            /* Проверяем: это eventfd или UDP-сокет? */
-            int got_eventfd = 0;
-            for (int i = 0; i < ret; i++) {
-                if (ev2[i].data.fd == qs->wfd) {
-                    uint64_t dummy;
-                    ssize_t _r = read(qs->wfd, &dummy, sizeof(dummy));
-                    if (_r > 0) (void)0;
-                    got_eventfd = 1;
-                }
-            }
-            if (got_eventfd) continue;
-            if (ev2[0].events & EPOLLIN) {
-                close(epfd);
-                *addr_len = sizeof(struct sockaddr_in);
-                n = recvfrom(qs->server_fd, buf, max_len, 0,
+    int ret = poll(pfds, nfds, timeout_ms);
+    if (ret <= 0) return 0;  /* timeout or error */
+    /* Drain eventfd if signaled */
+    if (nfds > 1 && pfds[1].revents & POLLIN) {
+        uint64_t dummy;
+        read(qs->wfd, &dummy, sizeof(dummy));
+        if (!qs->active) return QUIC_ERROR; /* shutdown */
+        return 0;
+    }
+    if (pfds[0].revents & POLLIN) {
+        *addr_len = sizeof(struct sockaddr_in);
+        ssize_t n = recvfrom(qs->server_fd, buf, max_len, 0,
                              (struct sockaddr*)client_addr, addr_len);
-                if (n <= 0) { if (n == 0) return QUIC_CLOSED; if (errno==EAGAIN) return 0; return QUIC_ERROR; }
-                return n;
-            }
+        if (n <= 0) {
+            if (errno == EAGAIN) return 0;
+            return QUIC_ERROR;
         }
-        /* Update elapsed time */
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        total_ms = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1e6;
+        return n;
     }
-    close(epfd);
-    return 0;  /* timeout */
+    return 0;
 }
 
 ssize_t quic_server_send(quic_server_t *qs, const struct sockaddr_in *client_addr,

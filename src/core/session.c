@@ -24,22 +24,9 @@ static uint32_t padding_hash(uint64_t x) {
     return (uint32_t)x;
 }
 
-static void padding_hash_random(uint32_t *out, uint64_t sid, uint8_t dir) {
-    /* Комбинируем детерминированный хеш с entropy из getrandom */
-    uint32_t det = padding_hash(sid);
-    uint32_t rnd;
-    ssize_t nr = getrandom(&rnd, 4, 0);
-    if (nr < 0) {
-        int fd = open("/dev/urandom", O_RDONLY);
-        if (fd >= 0) { ssize_t r = read(fd, &rnd, 4); (void)r; close(fd); }
-    }
-    *out = det ^ rnd ^ dir;
-}
-
 uint32_t protocol_compute_padding_len(uint64_t sid, uint8_t dir) {
-    uint32_t pad;
-    padding_hash_random(&pad, sid, dir);
-    return PADDING_MIN_BYTES + (pad % (PADDING_MAX_BYTES - PADDING_MIN_BYTES + 1));
+    uint32_t det = padding_hash(sid);
+    return PADDING_MIN_BYTES + ((det + dir) % (PADDING_MAX_BYTES - PADDING_MIN_BYTES + 1));
 }
 
 
