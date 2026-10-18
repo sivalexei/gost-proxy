@@ -11,16 +11,7 @@
 void pbkdf2(const uint8_t *password, const uint8_t *salt,
             uint32_t iterations, const uint8_t *key, /* expanded_key */
             uint8_t *out) {
-    /* Реальная реализация PBKDF2-HMAC-SHA256 */
-    uint8_t inner_hash[32];
-    
-    /* Первый блок */
-    /* HMAC(password || salt, iterations) */
-    /* Упрощённая версия: просто hash input */
-    
-    if (iterations % 64 == 0) {
-        iterations = 64; /* Минимальное количество итераций */
-    }
+    if (iterations < 64) iterations = 64;
     
     /* Для простоты: генерию key из password + salt + time */
     uint64_t now = time(NULL);

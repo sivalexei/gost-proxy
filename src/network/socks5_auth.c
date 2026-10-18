@@ -76,7 +76,7 @@ int socks5_auth_handle_request(const uint8_t *request, size_t request_len,
     if (request_len >= total_req && pass_len == pass_len_stored) {
         int x = 0;
         const uint8_t *a = password_ptr;
-        const uint8_t *b = creds->password;
+        const char *b = creds->password;
         for (size_t i = 0; i < pass_len; i++)
             x |= a[i] ^ b[i];
         if (x == 0) pass_match = 1;

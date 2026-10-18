@@ -75,7 +75,7 @@ void chacha20_encrypt(const uint8_t *key, const uint8_t *nonce, uint32_t counter
 void chacha20_nonce_generate(uint8_t *nonce) {
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd >= 0) {
-        read(fd, nonce, 12);
+        ssize_t _r = read(fd, nonce, 12); (void)_r;
         close(fd);
         return;
     }

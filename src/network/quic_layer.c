@@ -289,7 +289,7 @@ ssize_t quic_server_recv(quic_server_t *qs, uint8_t *buf, size_t max_len,
     /* Drain eventfd if signaled */
     if (nfds > 1 && pfds[1].revents & POLLIN) {
         uint64_t dummy;
-        read(qs->wfd, &dummy, sizeof(dummy));
+        ssize_t _r = read(qs->wfd, &dummy, sizeof(dummy)); (void)_r;
         if (!qs->active) return QUIC_ERROR; /* shutdown */
         return 0;
     }

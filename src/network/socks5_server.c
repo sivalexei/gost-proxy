@@ -24,7 +24,7 @@
 #define S5_AUTH_TIMEOUT 5
 
 // Глобальные переменные
-static s5_conn_t s5_conns[S5_MAX_CONNS];
+/* no per-conn table needed */
 static int s5_listen_fd = -1;
 static volatile int s5_running = 0;
 static pthread_t s5_tid;
