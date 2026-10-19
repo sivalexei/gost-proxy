@@ -423,6 +423,125 @@ static int connect_to_target(const char *host, uint16_t port) {
     log_info("TCP %s:%u", host, port); return fd;
 }
 
+/*
+ * data_work_ctx: holds results of DATA packet phase-1 (session lookup + unpack)
+ * so phase-2 (network I/O) runs without sessions_lock held — prevents DoS.
+ */
+typedef struct {
+    uint8_t decrypted[MAX_PAYLOAD];
+    size_t data_len;
+    uint32_t pkt_conn_id;
+    uint64_t session_id;
+} data_work_ctx;
+
+/* Phase 1: session lookup + decrypt (runs under sessions_lock — fast path) */
+static int data_work_phase1(const gost_packet_t *pkt, uint64_t session_id,
+                            uint8_t *dec_out, size_t *dl_out, uint32_t *cid_out) {
+    gost_session_t *session = find_session(session_id);
+    if (!session) {
+        log_warn("DATA: session not found, sid=%llu", (unsigned long long)session_id);
+        return -1;
+    }
+    session->last_activity = time(NULL);
+    if (protocol_unpack_data(pkt, dec_out, dl_out, cid_out,
+                            session, session->expanded_key, session->nonce,
+                            &session->recv_counter, 0) != 0) {
+        log_warn("DATA: unpack failed, sid=%llu", (unsigned long long)session_id);
+        return -1;
+    }
+    return 0;
+}
+
+/* Phase 2: TCP I/O (runs WITHOUT sessions_lock — fixes DoS) */
+static void data_work_phase2(quic_server_t *qs,
+                             const struct sockaddr_in *client_addr, socklen_t addr_len,
+                             uint64_t session_id, uint32_t pkt_conn_id,
+                             uint8_t *decrypted, size_t data_len) {
+    log_info("DATA: d[0]=0x%02x dl=%zu cid=%u", decrypted[0], data_len, pkt_conn_id);
+    if (data_len >= 8 && decrypted[0] == 0x01) {
+        int has_conn = 0;
+        pthread_mutex_lock(&proxy_lock);
+        if (find_proxy_conn(session_id, pkt_conn_id)) has_conn = 1;
+        pthread_mutex_unlock(&proxy_lock);
+        if (has_conn) goto forward_data;
+
+        uint8_t addr_type = decrypted[1];
+        char target_host[256] = {0};
+        uint16_t target_port = 0;
+        if (addr_type == 0x01 && data_len >= 10) {
+            struct in_addr addr;
+            memcpy(&addr, &decrypted[2], 4);
+            inet_ntop(AF_INET, &addr, target_host, sizeof(target_host));
+            target_port = (decrypted[8] << 8) | decrypted[9];
+        } else if (addr_type == 0x03 && data_len >= 3) {
+            size_t dlen = decrypted[2];
+            if (data_len >= 3 + dlen + 2) {
+                memcpy(target_host, &decrypted[3], dlen);
+                target_host[dlen] = '\0';
+                target_port = (decrypted[3 + dlen] << 8) | decrypted[3 + dlen + 1];
+            }
+        }
+        if (target_host[0] && target_port > 0) {
+            log_info("CONNECT %s:%u cid=%u", target_host, target_port, pkt_conn_id);
+            int tcp_fd = connect_to_target(target_host, target_port);
+            if (tcp_fd < 0) {
+                log_error("CONNECT FAILED %s:%u", target_host, target_port);
+                uint8_t err_d[] = {0x02, 0x01};
+                gost_packet_t ep;
+                memset(&ep, 0, sizeof(ep));
+                pthread_mutex_lock(&sessions_lock);
+                gost_session_t *s = find_session(session_id);
+                pthread_mutex_unlock(&sessions_lock);
+                if (s) {
+                    protocol_pack_data(&ep, session_id, pkt_conn_id, err_d, 2,
+                                      s->expanded_key, s->nonce,
+                                      &s->send_counter, 1);
+                    quic_server_send(qs, client_addr, addr_len,
+                                    (const uint8_t*)&ep, sizeof(gost_packet_t));
+                }
+                return;
+            }
+            pthread_mutex_lock(&proxy_lock);
+            proxy_conn_t *nc = create_proxy_conn(session_id);
+            if (!nc) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); return; }
+            nc->tcp_fd = tcp_fd;
+            nc->session_id = session_id;
+            nc->conn_id = pkt_conn_id;
+            nc->client_addr = *client_addr;
+            nc->addr_len = addr_len;
+            nc->send_counter = 0;
+            nc->connect_fd = -1;
+            pthread_mutex_unlock(&proxy_lock);
+
+            uint8_t ok_d[] = {0x02, 0x00};
+            gost_packet_t op;
+            memset(&op, 0, sizeof(op));
+            pthread_mutex_lock(&sessions_lock);
+            gost_session_t *s3 = find_session(session_id);
+            pthread_mutex_unlock(&sessions_lock);
+            if (s3) {
+                protocol_pack_data(&op, session_id, pkt_conn_id, ok_d, 2,
+                                  s3->expanded_key, s3->nonce,
+                                  &s3->send_counter, 1);
+                quic_server_send(qs, client_addr, addr_len,
+                                (const uint8_t*)&op, sizeof(gost_packet_t));
+            }
+            return;
+        }
+    } else {
+forward_data:
+        pthread_mutex_lock(&proxy_lock);
+        proxy_conn_t *conn = find_proxy_conn(session_id, pkt_conn_id);
+        pthread_mutex_unlock(&proxy_lock);
+        if (conn && conn->active && conn->tcp_fd >= 0) {
+            ssize_t w = tcp_write_all(conn->tcp_fd, decrypted, data_len);
+            if (w < 0) conn->active = 0;
+        } else if (pkt_conn_id != 0) {
+            log_debug("DATA: no conn cid=%u", pkt_conn_id);
+        }
+    }
+}
+
 static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
                                const gost_packet_t *pkt, uint64_t session_id) {
     uint8_t decrypted[MAX_PAYLOAD]; size_t data_len = 0; uint32_t pkt_conn_id = 0;
@@ -598,7 +717,19 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
                 break;
             }
             uint64_t session_id = ntohll(pkt->session_id);
-            handle_data_packet(qs, client_addr, addr_len, pkt, session_id);
+            data_work_ctx ctx;
+            memset(&ctx, 0, sizeof(ctx));
+            if (data_work_phase1(pkt, session_id, ctx.decrypted,
+                                &ctx.data_len, &ctx.pkt_conn_id) == 0 &&
+                ctx.data_len >= 1) {
+                /* RELEASE sessions_lock before network I/O — prevents DoS */
+                pthread_mutex_unlock(&sessions_lock);
+                data_work_phase2(qs, client_addr, addr_len,
+                                session_id, ctx.pkt_conn_id,
+                                ctx.decrypted, ctx.data_len);
+            } else {
+                break;
+            }
             break;
         }
         case PKT_KEEPALIVE: {
