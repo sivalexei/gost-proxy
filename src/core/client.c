@@ -62,6 +62,9 @@ int main(int argc, char *argv[]) {
     /* Инициализация логирования */
     log_init(cfg.log_level, cfg.log_file);
 
+    /* SIGPIPE: клиент тоже пишет в сокеты; при разрыве сервера — EPIPE, не abort */
+    signal(SIGPIPE, SIG_IGN);
+
     printf("=== ГОСТ Прокси-Клиент ===\n");
     printf("Сервер: %s:%d\n", cfg.server_ip, cfg.server_port);
     log_info("Клиент запущен, сервер: %s:%d", cfg.server_ip, cfg.server_port);

@@ -319,8 +319,6 @@ static inline gost_session_t* create_session(uint64_t sid) {
                 }
             }
             memcpy(sessions[i].expanded_key, expanded_key, 160);
-            /* Остальные 8 байт = 0 */
-            memcpy(sessions[i].expanded_key, expanded_key, 160);
             session_hash_add(sid, i); return &sessions[i];
         }
     }
@@ -336,6 +334,8 @@ static proxy_conn_t* create_proxy_conn(uint64_t sid) {
         if (!proxy_conns[i].active) { proxy_conns[i].active = 1; proxy_conns[i].session_id = sid; return &proxy_conns[i]; }
     return NULL;
 }
+/* Thread: read from target TCP, forward to client via QUIC */
+static void* tcp_to_udp_thread(void *arg) __attribute__((unused));
 static void* tcp_to_udp_thread(void *arg) {
     proxy_conn_t *conn = (proxy_conn_t *)arg;
     uint8_t buf[BUFFER_SIZE];
@@ -542,98 +542,6 @@ forward_data:
     }
 }
 
-static void handle_data_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len,
-                               const gost_packet_t *pkt, uint64_t session_id) {
-    uint8_t decrypted[MAX_PAYLOAD]; size_t data_len = 0; uint32_t pkt_conn_id = 0;
-    /* hex-dump first 20 payload bytes */
-    log_info("RECV_PAYLOAD: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-            pkt->payload[0], pkt->payload[1], pkt->payload[2], pkt->payload[3],
-            pkt->payload[4], pkt->payload[5], pkt->payload[6], pkt->payload[7],
-            pkt->payload[8], pkt->payload[9], pkt->payload[10], pkt->payload[11],
-            pkt->payload[12], pkt->payload[13], pkt->payload[14], pkt->payload[15],
-            pkt->payload[16], pkt->payload[17], pkt->payload[18], pkt->payload[19]);
-    /* mutex уже захвачен в handle_packet */
-    gost_session_t *session = find_session(session_id);
-    if (!session) { log_warn("handle_data_packet: session not found, sid=%llu", (unsigned long long)session_id); return; }
-    log_info("handle_data_packet: sid=%llu cid=%u type=%d magic=0x%08x", (unsigned long long)session_id, pkt_conn_id, pkt->type, ntohl(pkt->magic));
-    session->last_activity = time(NULL);
-    int up = protocol_unpack_data(pkt, decrypted, &data_len, &pkt_conn_id, session, session->expanded_key,
-                             session->nonce, &session->recv_counter, 0);
-    if (up != 0) { log_warn("handle_data_packet: unpack failed, sid=%llu cid=%u", (unsigned long long)session_id, pkt_conn_id); return; }
-
-    if (data_len < 1) { return; }
-    /* Сервер трактует все DATA-пакеты как данные туннеля.
-     * CONNECT-запросы передаются как данные с префиксом:
-     * [0]=0x01 (CONNECT), [1]=ATYP, далее адрес и порт.
-     * Это не конфликтует с проксируемым трафиком — проксируемые данные
-     * приходят уже после установления соединения и не начинаются с 0x01.
-     * Для надёжности: если данные начинаются с 0x01 и длина >= 8,
-     * это CONNECT-запрос (формат SOCKS5 CONNECT).
-     * Но мы проверяем, что это не уже установленное соединение. */
-    log_info("DATA: decrypted[0]=0x%02x data_len=%zu pkt_conn_id=%u", decrypted[0], data_len, pkt_conn_id);
-    if (data_len >= 8 && decrypted[0] == 0x01 && !find_proxy_conn(session_id, pkt_conn_id)) {
-        log_info("DATA: CONNECT detected, decrypted[0..15]=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x", decrypted[0], decrypted[1], decrypted[2], decrypted[3], decrypted[4], decrypted[5], decrypted[6], decrypted[7], decrypted[8], decrypted[9], decrypted[10], decrypted[11], decrypted[12], decrypted[13], decrypted[14], decrypted[15]);
-        uint8_t addr_type = decrypted[1]; char target_host[256] = {0}; uint16_t target_port = 0;
-        if (addr_type == 0x01 && data_len >= 10) {
-            struct in_addr addr; memcpy(&addr, &decrypted[2], 4);
-            inet_ntop(AF_INET, &addr, target_host, sizeof(target_host));
-            target_port = (decrypted[8] << 8) | decrypted[9];
-            log_info("DATA: parsed IPv4 addr=%s port=%u", target_host, target_port);
-        } else if (addr_type == 0x03 && data_len >= 3) {
-            size_t dlen = decrypted[2];
-            if (data_len >= 3 + dlen + 2) {
-                memcpy(target_host, &decrypted[3], dlen); target_host[dlen] = '\0';
-                target_port = (decrypted[3 + dlen] << 8) | decrypted[3 + dlen + 1];
-                log_info("DATA: parsed hostname=%s port=%u", target_host, target_port);
-            } else {
-                log_info("DATA: addr_type=%d data_len=%zu too short", addr_type, data_len);
-            }
-        } else {
-            log_info("DATA: addr_type=%d data_len=%zu not IPv4", addr_type, data_len);
-        }
-        if (target_host[0] && target_port > 0) {
-            log_info("CONNECT %s:%u (cid=%u)", target_host, target_port, pkt_conn_id);
-            log_info("CONNECT: calling connect_to_target(%s:%u)", target_host, target_port);
-            /* Синхронный connect: клиент ждёт OK в течение 5с */
-            int tcp_fd = connect_to_target(target_host, target_port);
-            log_info("CONNECT: connect_to_target returned fd=%d", tcp_fd);
-            if (tcp_fd < 0) { log_error("CONNECT to %s:%u FAILED", target_host, target_port);
-                uint8_t err_data[] = { 0x02, 0x01 };
-                gost_packet_t err_pkt; memset(&err_pkt, 0, sizeof(err_pkt));
-                protocol_pack_data(&err_pkt, session_id, pkt_conn_id, err_data, 2, session->expanded_key, session->nonce, &session->send_counter, 1);
-                quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&err_pkt, sizeof(gost_packet_t));
-                return;
-            }
-            pthread_mutex_lock(&proxy_lock);
-            proxy_conn_t *conn = create_proxy_conn(session_id);
-            if (!conn) { close(tcp_fd); pthread_mutex_unlock(&proxy_lock); return; }
-            conn->tcp_fd = tcp_fd; conn->session_id = session_id; conn->conn_id = pkt_conn_id;
-            conn->client_addr = *client_addr; conn->addr_len = addr_len;
-            conn->send_counter = 0; conn->connect_fd = -1;
-            pthread_mutex_unlock(&proxy_lock);
-            /* Запускаем tcp_to_udp_thread и шлём OK */
-            pthread_t wthread; pthread_create(&wthread, NULL, tcp_to_udp_thread, conn); pthread_detach(wthread);
-            uint8_t ok_data[] = { 0x02, 0x00 };
-            gost_packet_t ok_pkt; memset(&ok_pkt, 0, sizeof(ok_pkt));
-            protocol_pack_data(&ok_pkt, session_id, pkt_conn_id, ok_data, 2, session->expanded_key, session->nonce, &session->send_counter, 1);
-            quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ok_pkt, sizeof(gost_packet_t));
-            log_info("CONNECT OK cid=%u fd=%d", pkt_conn_id, tcp_fd);
-            return;
-        }
-    }
-    /* Проверяем, есть ли уже установленное соединение */
-    pthread_mutex_lock(&proxy_lock);
-    proxy_conn_t *conn = find_proxy_conn(session_id, pkt_conn_id);
-    pthread_mutex_unlock(&proxy_lock);
-    if (conn && conn->active && conn->tcp_fd >= 0) {
-        log_info("DATA: forwarding to existing conn fd=%d, cid=%u", conn->tcp_fd, pkt_conn_id);
-        ssize_t written = tcp_write_all(conn->tcp_fd, decrypted, data_len);
-        if (written < 0) conn->active = 0;
-    } else if (pkt_conn_id != 0) {
-        /* Пакет для неизвестного conn_id — просто игнорируем */
-        log_debug("DATA: no connection for cid=%u, has_conn=%d", pkt_conn_id, conn != NULL);
-    }
-}
 static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_addr, socklen_t addr_len, const uint8_t *data, size_t len) {
     if (len < sizeof(gost_packet_t)) { log_debug("handle_packet: too short (%zu)", len); return; }
     const gost_packet_t *pkt = (const gost_packet_t *)data;
@@ -700,14 +608,24 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
             session->client_addr_len = addr_len;
             ip_count_inc(client_addr);
 
-            /* Отправляем handshake_ack с session_nonce и auth_tag */
+            /* Copy data needed outside the lock */
+            uint8_t *ek_copy = session->expanded_key;
+            uint8_t *nonce_copy = session->nonce;
+            struct sockaddr_in saved_addr = session->client_addr;
+            socklen_t saved_addr_len = session->client_addr_len;
+            ssize_t sent;
+            uint64_t hs_session_id = session_id;
+
+            pthread_mutex_unlock(&sessions_lock);
+
+            /* Отправляем handshake_ack — OUTSIDE sessions_lock (no blocking I/O under lock) */
             gost_packet_t response;
-            protocol_create_handshake(&response, session_id, session->expanded_key,
-                                       client_nonce, server_nonce, session->nonce);
-            ssize_t sent = quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&response, sizeof(response));
-            log_info("HANDSHAKE SENT: %zd bytes to %s", sent, inet_ntoa(client_addr->sin_addr));
-            log_info("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(client_addr->sin_addr), (unsigned long long)session_id);
-            break;
+            protocol_create_handshake(&response, hs_session_id, ek_copy,
+                                       client_nonce, server_nonce, nonce_copy);
+            sent = quic_server_send(qs, &saved_addr, saved_addr_len, (const uint8_t*)&response, sizeof(response));
+            log_info("HANDSHAKE SENT: %zd bytes to %s", sent, inet_ntoa(saved_addr.sin_addr));
+            log_info("HANDSHAKE OK: client=%s, sid=%llu", inet_ntoa(saved_addr.sin_addr), (unsigned long long)hs_session_id);
+            return;
         }
         case PKT_DATA: {
             /* Rate limiting для данных per IP */
@@ -735,83 +653,100 @@ static void handle_packet(quic_server_t *qs, const struct sockaddr_in *client_ad
         case PKT_KEEPALIVE: {
             uint64_t ka_sid = ntohll(pkt->session_id);
             gost_session_t *ka_ssn = find_session(ka_sid);
-            if (ka_ssn) {
-                ka_ssn->last_activity = time(NULL);
-                gost_packet_t ka_resp;
-                memset(&ka_resp, 0, sizeof(ka_resp));
-                ka_resp.magic = htonl(GOST_PROXY_MAGIC);
-                ka_resp.type = PKT_KEEPALIVE;
-                ka_resp.session_id = pkt->session_id;
-                quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&ka_resp, sizeof(ka_resp));
-                log_debug("KEEPALIVE OK: sid=%llu", (unsigned long long)ka_sid);
-            } else {
+            if (!ka_ssn) {
                 log_warn("KEEPALIVE: session not found for sid=%llu", (unsigned long long)ka_sid);
+                break;
             }
+            ka_ssn->last_activity = time(NULL);
+            struct sockaddr_in saved_addr = ka_ssn->client_addr;
+            socklen_t saved_addr_len = ka_ssn->client_addr_len;
             expire_sessions();
-            break;
+            pthread_mutex_unlock(&sessions_lock);
+            gost_packet_t ka_resp;
+            memset(&ka_resp, 0, sizeof(ka_resp));
+            ka_resp.magic = htonl(GOST_PROXY_MAGIC);
+            ka_resp.type = PKT_KEEPALIVE;
+            ka_resp.session_id = pkt->session_id;
+            quic_server_send(qs, &saved_addr, saved_addr_len,
+                            (const uint8_t*)&ka_resp, sizeof(ka_resp));
+            log_debug("KEEPALIVE OK: sid=%llu", (unsigned long long)ka_sid);
+            return;
         }
         case PKT_SIM_CHALLENGE: {
             expire_sessions();
-            uint64_t session_id = ntohll(pkt->session_id);
-            gost_session_t *session = find_session(session_id);
-            if (!session) { session_reset_free_slot(); session = find_session(session_id); }
-            if (!session) { log_warn("CHALLENGE: session not found for sid=%llu", (unsigned long long)session_id); break; }
+            uint64_t chal_sid = ntohll(pkt->session_id);
+            gost_session_t *session = find_session(chal_sid);
+            if (!session) { session_reset_free_slot(); session = find_session(chal_sid); }
+            if (!session) {
+                log_warn("CHALLENGE: session not found for sid=%llu", (unsigned long long)chal_sid);
+                break;
+            }
             /* Вычисляем answer из expanded_key сессии (P4-10: CPS не на фиксированном ключе) */
             uint8_t answer[32];
-            protocol_compute_cps_answer(session_id, session->expanded_key, answer);
+            protocol_compute_cps_answer(chal_sid, session->expanded_key, answer);
             /* Проверяем: client's answer должен совпадать с challenge
              * prevent: answer = CMAC(session_id, expanded_key) — только владелец PSK вычислит правильно */
             int verify_ret = (memcmp(pkt->payload, answer, 32) == 0) ? 0 : -1;
-            log_debug("CHALLENGE: verify=%d for sid=%llu", verify_ret, (unsigned long long)session_id);
-            if (verify_ret == 0) {
+            log_debug("CHALLENGE: verify=%d for sid=%llu", verify_ret, (unsigned long long)chal_sid);
+            uint8_t cps_ok = (verify_ret == 0);
+            if (cps_ok) {
                 session->cps_enabled = 1;
                 memcpy(session->cps_response, answer, 32);
+            }
+            struct sockaddr_in saved_addr = session->client_addr;
+            socklen_t saved_addr_len = session->client_addr_len;
+            uint64_t chal_session_id = chal_sid;
+            uint8_t saved_answer[32];
+            if (cps_ok) memcpy(saved_answer, answer, 32);
+            pthread_mutex_unlock(&sessions_lock);
+
+            if (cps_ok) {
                 gost_packet_t resp;
                 memset(&resp, 0, sizeof(resp));
                 resp.magic = htonl(GOST_PROXY_MAGIC);
                 resp.type = PKT_SIM_CHALLENGE;
-                resp.session_id = session_id;
-                memcpy(resp.payload, answer, 32);
-                memcpy(resp.payload+32, answer, 32);  /* challenge=answer для ответа */
-                quic_server_send(qs, client_addr, addr_len, (const uint8_t*)&resp, sizeof(resp));
-                log_info("CPS challenge verified (sid=%llu)", (unsigned long long)session_id);
+                resp.session_id = chal_session_id;
+                memcpy(resp.payload, saved_answer, 32);
+                memcpy(resp.payload + 32, saved_answer, 32);
+                quic_server_send(qs, &saved_addr, saved_addr_len,
+                                (const uint8_t*)&resp, sizeof(resp));
+                log_info("CPS challenge verified (sid=%llu)", (unsigned long long)chal_session_id);
             }
-            break;
+            return;
         }
         case PKT_DISCONNECT: {
-            uint64_t session_id = ntohll(pkt->session_id);
+            uint64_t dc_sid = ntohll(pkt->session_id);
             uint32_t dc_cid = ntohl(pkt->conn_id);
-            gost_session_t *session = find_session(session_id);
-            /* Пустые строки */
+            gost_session_t *session = find_session(dc_sid);
             /* Если сессия не найдена — нельзя аутентифицировать DISCONNECT */
             if (!session) {
-                log_info("DISCONNECT: session not found, sid=%llu", (unsigned long long)session_id);
+                log_info("DISCONNECT: session not found, sid=%llu", (unsigned long long)dc_sid);
                 break;
             }
             /* Аутентификация DISCONNECT: проверяем auth_tag через EK */
-            uint64_t verify_sid = session_id;
+            uint64_t verify_sid = dc_sid;
             uint8_t expected_auth[AUTH_TAG_SIZE];
             compute_disconnect_auth(verify_sid, dc_cid, session->expanded_key, expected_auth);
-            if (session && memcmp(pkt->auth_tag, expected_auth, AUTH_TAG_SIZE) != 0) {
-                log_warn("DISCONNECT: auth FAIL for sid=%llu", (unsigned long long)session_id);
+            if (memcmp(pkt->auth_tag, expected_auth, AUTH_TAG_SIZE) != 0) {
+                log_warn("DISCONNECT: auth FAIL for sid=%llu", (unsigned long long)dc_sid);
                 break;  /* Отказ — неправильный auth_tag */
             }
-            if (session) {
-                int idx = session_hash[session_hash_func(session_id)];
-                session_remove(idx);
-            }
+            int idx = session_hash[session_hash_func(dc_sid)];
+            session_remove(idx);
+            session_reset_free_slot();
+            pthread_mutex_unlock(&sessions_lock);
+
+            /* OUTSIDE sessions_lock — close TCP without holding session lock */
             pthread_mutex_lock(&proxy_lock);
-            proxy_conn_t *conn = find_proxy_conn(session_id, dc_cid);
+            proxy_conn_t *conn = find_proxy_conn(dc_sid, dc_cid);
             if (conn) {
                 conn->active = 0;
                 if (conn->tcp_fd >= 0) close(conn->tcp_fd);
                 conn->tcp_fd = -1;
             }
             pthread_mutex_unlock(&proxy_lock);
-            /* Подождём tcp_to_udp_thread (prevent: use-after-free) */
-            usleep(50000);  /* 50ms */
-            session_reset_free_slot();
-            break;
+            usleep(50000);  /* 50ms for tcp_to_udp_thread (prevent: use-after-free) */
+            return;
         }
         default: break;
     }

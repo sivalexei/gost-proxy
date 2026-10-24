@@ -128,7 +128,7 @@ int protocol_unpack_data(const gost_packet_t *pkt, uint8_t *data, size_t *dl,
     uint32_t *oci, gost_session_t *sess, const uint8_t *ek, const uint8_t *nonce, uint32_t *ctr, uint8_t obf_dir) {
     if(!pkt||!data||!dl||!sess||!ek||!nonce||!ctr){log_debug("UNPACK: param fail"); return -1;}
     if(oci) *oci = ntohl(pkt->conn_id);
-    log_info("protocol_unpack_data: START");
+    log_debug("protocol_unpack_data: START");
     log_debug("protocol_unpack_data: params OK");
     uint8_t *deobf=malloc(MAX_PAYLOAD+8);if(!deobf)return -1;
     memcpy(deobf,pkt->payload,sizeof(pkt->payload));
